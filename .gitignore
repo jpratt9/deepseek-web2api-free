@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 server_test.log
+ds2api.log
 venv/
 .venv/
 data/accounts.json

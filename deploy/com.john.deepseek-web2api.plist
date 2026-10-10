@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.john.deepseek-web2api</string>
+
+    <!-- OpenAI/Anthropic-compatible DeepSeek proxy. Runs from its own venv
+         (curl_cffi, wasmtime, fastapi, …), so the absolute python needs no
+         PATH. Reads .env + data/accounts.json from WorkingDirectory. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/john/dev/deepseek-web2api-free/.venv/bin/python</string>
+        <string>-m</string>
+        <string>uvicorn</string>
+        <string>server:app</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+        <string>--port</string>
+        <string>8080</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/john/dev/deepseek-web2api-free</string>
+
+    <!-- start at login and keep it alive (restart on crash or exit) -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <!-- a responsive API server: don't let macOS App Nap throttle it -->
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/john/dev/deepseek-web2api-free/ds2api.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/john/dev/deepseek-web2api-free/ds2api.log</string>
+</dict>
+</plist>
