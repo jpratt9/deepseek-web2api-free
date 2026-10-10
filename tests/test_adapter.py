@@ -85,7 +85,7 @@ class TestHintScanning:
         ad = _adapter()
         sse = (
             "event: ready\ndata: {\"request_message_id\":1}\n\n"
-            "data: {\"v\":\"正常\"}\n\n"
+            "data: {\"v\":\"normal\"}\n\n"
         )
         events = ad._parse_sse(sse)
         assert ad._scan_hint_errors(events) is None
@@ -116,13 +116,13 @@ class TestChatRetry:
                 return _FakeResp("")
             return _FakeResp(
                 "event: ready\ndata: {\"request_message_id\":1}\n\n"
-                "data: {\"v\":\"正常\"}\n\n"
+                "data: {\"v\":\"normal\"}\n\n"
             )
 
         monkeypatch.setattr(ad, "_send_completion", fake_send)
         monkeypatch.setattr(ad, "create_session", lambda: "sess-2")
         content, _ = ad.chat("sess-1", "prompt")
-        assert content == "正常"
+        assert content == "normal"
         assert calls["n"] == 2
 
     def test_raises_after_two_empty_responses(self, monkeypatch):
@@ -151,13 +151,13 @@ class TestChatRetry:
                 return _FakeResp(empty_sse)
             return _FakeResp(
                 "event: ready\ndata: {\"request_message_id\":1}\n\n"
-                "data: {\"v\":\"重试内容\"}\n\n"
+                "data: {\"v\":\"retry content\"}\n\n"
             )
 
         monkeypatch.setattr(ad, "_send_completion", fake_send)
         monkeypatch.setattr(ad, "create_session", lambda: "sess-2")
         content, _ = ad.chat("sess-1", "prompt")
-        assert content == "重试内容"
+        assert content == "retry content"
         assert calls["n"] == 2
 
     def test_rate_limit_backoff_then_success(self, monkeypatch):
@@ -212,14 +212,14 @@ class TestChatStream:
                 return _FakeStreamResp("")  # empty body -> empty stream
             return _FakeStreamResp(
                 "event: ready\ndata: {\"request_message_id\":1}\n\n"
-                "data: {\"v\":\"流式内容\"}\n\n"
+                "data: {\"v\":\"streaming content\"}\n\n"
             )
 
         monkeypatch.setattr(ad, "_pow_headers", lambda *a, **k: {})
         monkeypatch.setattr(ad, "_client", type("C", (), {"post": fake_post})())
         monkeypatch.setattr(ad, "create_session", lambda: "sess-2")
         tokens = list(ad.chat_stream("sess-1", "prompt"))
-        assert "流式内容" in tokens
+        assert "streaming content" in tokens
         assert calls["n"] == 2
 
     def test_inline_hint_raises_rate_limit_error(self, monkeypatch):

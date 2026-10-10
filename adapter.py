@@ -87,7 +87,8 @@ class UpstreamHintError(RuntimeError):
 
 class RateLimitError(UpstreamHintError):
     """Upstream rate limiting (finish_reason ``rate_limit_reached``:
-    '消息发送过于频繁，请稍后重试'). Maps to HTTP 429 on the server side."""
+    '消息发送过于频繁，请稍后重试' — "messages sent too frequently, please retry
+    later"). Maps to HTTP 429 on the server side."""
 
 
 class UserMutedError(RateLimitError):
@@ -123,12 +124,12 @@ def _mute_msg(raw) -> str | None:
         bd = d.get("biz_data")
         if isinstance(bd, dict) and bd.get("mute_until"):
             try:
-                until = "，解封时间 " + datetime.datetime.fromtimestamp(
+                until = ", unmuted at " + datetime.datetime.fromtimestamp(
                     float(bd["mute_until"])
                 ).strftime("%Y-%m-%d %H:%M")
             except (TypeError, ValueError, OSError, OverflowError):
                 until = ""
-        return f"上游账号已静音：{biz_msg or 'user is muted'}{until}"
+        return f"Upstream account is muted: {biz_msg or 'user is muted'}{until}"
     return None
 
 
@@ -493,7 +494,8 @@ class DeepSeekAdapter:
 
         Rate limiting arrives as an SSE ``event: hint`` frame with
         ``type=error`` and ``finish_reason=rate_limit_reached``
-        ('消息发送过于频繁，请稍后重试'). Previously unparsed, so a
+        ('消息发送过于频繁，请稍后重试' — "messages sent too frequently, please
+        retry later"). Previously unparsed, so a
         rate-limited request looked like a successful empty completion.
         """
         for event_type, data in events:

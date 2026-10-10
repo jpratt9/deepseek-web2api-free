@@ -580,11 +580,11 @@ def _openai_chunk(proxy_id: str, content: str = "", finish: bool = False,
 
 
 def _emit_tool_calls_chunks(tool_calls: list[dict], chat_id: str) -> list[str]:
-    """生成 OpenAI 流式 tool_calls SSE 事件。"""
+    """Generate OpenAI streaming tool_calls SSE events."""
     chunks = []
     created = int(time.time())
     for i, tc in enumerate(tool_calls):
-        # 首帧：id + name
+        # First frame: id + name
         delta = {
             "role": "assistant",
             "content": None,
@@ -596,7 +596,7 @@ def _emit_tool_calls_chunks(tool_calls: list[dict], chat_id: str) -> list[str]:
             }],
         }
         chunks.append(f"data: {json.dumps({'id': chat_id, 'object': 'chat.completion.chunk', 'created': created, 'model': MODEL_NAME, 'choices': [{'index': 0, 'delta': delta, 'finish_reason': None}]}, ensure_ascii=False)}\n\n")
-        # 次帧：arguments
+        # Second frame: arguments
         delta2 = {
             "tool_calls": [{
                 "index": i,
@@ -799,7 +799,7 @@ def _anthropic_nonstream(msg_id: str, prompt: str, tool_names: list[str],
             SESSION_CACHE.invalidate(cache_key)
         raise HTTPException(
             status_code=429,
-            detail=f"上游限流：{e.args[0] if e.args else '请求过于频繁'}，请稍后重试",
+            detail=f"Upstream rate limited: {e.args[0] if e.args else 'requests too frequent'}. Please retry later.",
         )
     except UpstreamHintError as e:
         get_stats().record(MODEL_NAME, 0, success=False)
@@ -811,7 +811,7 @@ def _anthropic_nonstream(msg_id: str, prompt: str, tool_names: list[str],
         get_stats().record(MODEL_NAME, 0, success=False)
         if cache_key:
             SESSION_CACHE.invalidate(cache_key)
-        raise HTTPException(status_code=502, detail="上游返回空响应（可能触发限流），请稍后重试")
+        raise HTTPException(status_code=502, detail="Upstream returned an empty response (may be rate limited); please retry later.")
     except Exception as e:
         get_stats().record(MODEL_NAME, 0, success=False)
         pool.mark_error(acq.acct, str(e))
@@ -921,7 +921,7 @@ def _handle_nonstream(proxy_id: str, prompt: str, tools: list[ToolDef] | None = 
         get_stats().record(MODEL_NAME, 0, success=False)
         if cache_key:
             SESSION_CACHE.invalidate(cache_key)
-        raise HTTPException(status_code=429, detail=f"上游限流：{e.args[0] if e.args else '请求过于频繁'}，请稍后重试")
+        raise HTTPException(status_code=429, detail=f"Upstream rate limited: {e.args[0] if e.args else 'requests too frequent'}. Please retry later.")
     except UpstreamHintError as e:
         get_stats().record(MODEL_NAME, 0, success=False)
         pool.mark_error(acq.acct, str(e))
@@ -932,7 +932,7 @@ def _handle_nonstream(proxy_id: str, prompt: str, tools: list[ToolDef] | None = 
         get_stats().record(MODEL_NAME, 0, success=False)
         if cache_key:
             SESSION_CACHE.invalidate(cache_key)
-        raise HTTPException(status_code=502, detail="上游返回空响应（可能触发限流），请稍后重试")
+        raise HTTPException(status_code=502, detail="Upstream returned an empty response (may be rate limited); please retry later.")
     except Exception as e:
         get_stats().record(MODEL_NAME, 0, success=False)
         pool.mark_error(acq.acct, str(e))

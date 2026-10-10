@@ -20,9 +20,9 @@ export function PoolStatusCard({ accounts, total, idle, busy, error }: Props) {
     <Card>
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-base">账号池状态</CardTitle>
+          <CardTitle className="text-base">Account Pool Status</CardTitle>
           <Link to="/accounts" className="text-xs text-muted-foreground hover:text-primary">
-            管理 →
+            Manage →
           </Link>
         </div>
       </CardHeader>
@@ -30,19 +30,19 @@ export function PoolStatusCard({ accounts, total, idle, busy, error }: Props) {
         <div className="grid grid-cols-4 gap-3 text-center">
           <div>
             <div className="text-2xl font-bold tabular-nums">{total}</div>
-            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">总计</div>
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Total</div>
           </div>
           <div>
             <div className="text-2xl font-bold tabular-nums text-success">{idle}</div>
-            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">空闲</div>
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Idle</div>
           </div>
           <div>
             <div className="text-2xl font-bold tabular-nums text-primary">{busy}</div>
-            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">繁忙</div>
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Busy</div>
           </div>
           <div>
             <div className="text-2xl font-bold tabular-nums text-warning">{error}</div>
-            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">异常</div>
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Error</div>
           </div>
         </div>
         <div className="flex h-2 w-full overflow-hidden rounded-full bg-secondary">
@@ -58,7 +58,7 @@ export function PoolStatusCard({ accounts, total, idle, busy, error }: Props) {
               </Badge>
             ))}
             {accounts.length > 16 && (
-              <span className="text-xs text-muted-foreground">+{accounts.length - 16} 更多</span>
+              <span className="text-xs text-muted-foreground">+{accounts.length - 16} more</span>
             )}
           </div>
         )}

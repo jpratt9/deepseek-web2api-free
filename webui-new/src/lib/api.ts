@@ -1,11 +1,10 @@
 /**
  * Fetch wrapper around the admin + v1 endpoints.
  *
- * Reads the bearer token from `useAuthStore` on every call. A 401
- * triggers an automatic logout + redirect to /login. Network errors
- * bubble up as `ApiCallError` so callers can render a useful message.
+ * The panel runs on localhost with no auth, so no token is attached.
+ * Network errors bubble up as `ApiCallError` so callers can render a
+ * useful message.
  */
-import { useAuthStore } from '@/stores/auth'
 import type { ApiError } from './types'
 
 export class ApiCallError extends Error {
@@ -39,9 +38,7 @@ export async function api<T = unknown>(
   path: string,
   opts: ApiOptions = {},
 ): Promise<T> {
-  const token = useAuthStore.getState().token
   const headers = buildHeaders(opts.headers, opts.body !== undefined)
-  if (token) headers.set('Authorization', `Bearer ${token}`)
 
   const init: RequestInit = {
     ...opts,
@@ -51,11 +48,8 @@ export async function api<T = unknown>(
 
   const res = await fetch(path, init)
 
-  // 401 → clear auth state and surface a typed error so the React tree
-  // can react via the auth-store subscription.
   if (res.status === 401) {
-    useAuthStore.getState().logout()
-    throw new ApiCallError(401, '未授权，请重新登录')
+    throw new ApiCallError(401, 'Unauthorized')
   }
 
   if (!res.ok) {

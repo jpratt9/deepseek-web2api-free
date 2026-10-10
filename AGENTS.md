@@ -1,352 +1,352 @@
 # AGENTS.md — DeepSeek Chat API Proxy (Preview)
 
-> 本文档面向后续维护本项目的 AI 智能体，完整阐述项目的实现原理、协议细节、代码架构和已知问题。**请先全文阅读本文档再开始任何修改**。
+> This document is for AI agents who will maintain this project later. It fully explains the project's implementation principles, protocol details, code architecture, and known issues. **Please read the whole document before making any changes.**
 
-## 当前账号配置规则
+## Current account configuration rules
 
-- 账号凭证只通过 WebUI 账号池或 `data/accounts.json` 配置；WebUI 的修改会持久化到该 JSON 文件。
-- `.env` 中的 `DEEPSEEK_TOKEN`、`DEEPSEEK_COOKIES`、`DEEPSEEK_EMAIL`、`DEEPSEEK_PROXY` 及编号形式不再读取；池空时不会使用环境变量兜底。
-- 以下版本记录保留当时的实现历史；其中曾描述的 `.env` 账号兜底已经移除。
-
----
-
-## v3.3.4（2026-09-10）：Anthropic 非流式错误映射
-
-- `/v1/messages` 非流式路径现在将上游限流映射为 429，将空响应和协议 hint 错误映射为 502，与 OpenAI 端点保持一致；新增回归测试并接入 CI。
-
-## v3.3.3（2026-09-10）：会话隔离与账号绑定修复
-
-- `ChatSession` 现在记录创建上游会话的 `account_id`。续聊优先获取该账号；若账号忙或不可用，则安全地新建会话，绝不将一个账号的 `chat_session_id` / `parent_message_id` 交给另一个账号。
-- 会话缓存只接受显式会话标识：`X-Conversation-Id`、OpenAI 顶层 `user` 或 Anthropic `metadata.user_id`。缓存键还按调用方（API key 的哈希；无鉴权时为客户端 IP）隔离。删除“第一条消息摘要”回退，避免不同用户首句相同而串话。
+- Account credentials are configured only through the WebUI account pool or `data/accounts.json`; WebUI changes are persisted to that JSON file.
+- `DEEPSEEK_TOKEN`, `DEEPSEEK_COOKIES`, `DEEPSEEK_EMAIL`, `DEEPSEEK_PROXY` in `.env`, and their numbered forms, are no longer read; when the pool is empty there is no environment-variable fallback.
+- The version notes below preserve the implementation history at the time; the `.env` account fallback they once described has since been removed.
 
 ---
 
-## v3.0.0 → v3.3.2 变更摘要
+## v3.3.4 (2026-09-10): Anthropic non-streaming error mapping
 
-### v3.3.2（2026-09-05）：WebUI 请求趋势图修复（stats 历史采样 AttributeError）
+- The `/v1/messages` non-streaming path now maps upstream rate limiting to 429, and empty responses and protocol hint errors to 502, consistent with the OpenAI endpoint; added regression tests and wired them into CI.
 
-- **合并 PR #14**：`stats_history.StatsHistory.snapshot()` 读取了 `StatsSnapshot` 上不存在的 `avg_latency_ms` 属性 → 每次快照抛 `AttributeError`，被采样线程 `except Exception: pass` 静默吞掉 → `/admin/api/history` 自进程启动起永远返回 `points: []`。修复为与 `/admin/api/stats` 端点一致的自算平均：`total_latency_ms / total_requests`（零请求时 0.0）（详见 [docs/release-notes/v3.3.2.md](docs/release-notes/v3.3.2.md)）
-- **测试**：新增 `tests/test_stats_history.py`（4 例：正常取值 / 零请求不除零 / 严格对象回归测试——snapshot 只允许触碰真实存在字段 / max_points 截断）
+## v3.3.3 (2026-09-10): session isolation and account-binding fix
 
-### v3.3.1（2026-08-11）：防轰炸加固 + 双语文档
-
-- **合并 PR #11（防账号静音）**：上游并发上限 `DEEPSEEK_MAX_CONCURRENCY`(默认2) + 增量(delta)prompt + 静音识别(`UserMutedError`→429) + 重试 parent 清理 + `SESSION_CACHE_TTL` 默认 600→1800（详见 [docs/release-notes/v3.3.1.md](docs/release-notes/v3.3.1.md)）
-- **文档**：新增 `README_en.md` 英文完整版 + 双语顶部语言切换链接；删除 README 顶部的版本日志块（changelog 归 docs/release-notes/）；README/AGENTS.md 补「非交互式账号池配置」（accounts.json schema + 自动化配置 checklist）
+- `ChatSession` now records the `account_id` that created the upstream session. Continuations prefer that account; if it is busy or unavailable, a new session is started safely, never handing one account's `chat_session_id` / `parent_message_id` to another account.
+- The session cache accepts only explicit session identifiers: `X-Conversation-Id`, OpenAI's top-level `user`, or Anthropic `metadata.user_id`. The cache key is also isolated per caller (hash of the API key; the client IP when unauthenticated). The "first-message summary" fallback was removed to avoid crosstalk when different users share the same opening line.
 
 ---
 
-## v3.0.0 → v3.2.4 变更摘要
+## v3.0.0 → v3.3.2 change summary
 
-### v3.2.4（2026-08-11）：上游并发上限 + 增量 prompt（防历史泛滥/防静音）
+### v3.3.2 (2026-09-05): WebUI request-trend chart fix (stats history sampling AttributeError)
 
-- **并发上限**：`DEEPSEEK_MAX_CONCURRENCY`（默认 `2`）全局限制同时进行中的上游请求（跨账号），超出的请求排队等待而非 503（`_UPSTREAM_LIMITER` `BoundedSemaphore`，在 `_acquire()` 中先于 `pool.acquire()` 获取、`AcquiredAccount.release()` 幂等释放）。编码智能体（opencode/Claude Code）会并行派出多个子 agent，此前会并发轰炸上游诱发账号静音
-- **增量 prompt（delta）**：`ChatSession.sent_prompt` 记录上一轮实际发送的完整 prompt；`AcquiredAccount.prepare_prompt()` 对客户端重发的完整历史做前缀比对——历史是上一轮的延续时只把**新增尾部**发给上游（上下文由 parent 链在服务端维系）；完全重复视为同一轮重试（重发）；历史发散则失效缓存换新会话。此前每次请求都重发整段历史，DeepSeek 会话中每条消息都内嵌之前所有轮次（平方级膨胀，自动化特征显著，是账号被静音的重要诱因）
-- **静音识别**：上游对账号级处罚返回 200 + 普通 JSON `{"data":{"biz_code":5,"biz_msg":"user is muted","mute_until":...}}`（非 SSE，旧代码解析为"空响应"）。`UserMutedError`（`RateLimitError` 子类）在流式/非流式两条路径识别并立即抛出（跳过退避重试），映射 429 并带解封时间
-- **重试带清理**：rate-limit/空响应换新会话重试时不再携带旧会话的 `parent_message_id`（新会话里的无效 parent 会导致上游再次空响应）
-- **SESSION_CACHE_TTL 默认 600 → 1800**：长编码会话（agent 10 分钟+ 空闲）不再频繁被迫新建上游会话
-- 完整清单：`docs/release-notes/v3.2.4.md`
+- **Merged PR #14**: `stats_history.StatsHistory.snapshot()` read an `avg_latency_ms` attribute that does not exist on `StatsSnapshot` → every snapshot threw `AttributeError`, swallowed silently by the sampler thread's `except Exception: pass` → `/admin/api/history` always returned `points: []` from process start. Fixed to the same self-computed average as the `/admin/api/stats` endpoint: `total_latency_ms / total_requests` (0.0 when there are zero requests) (see [docs/release-notes/v3.3.2.md](docs/release-notes/v3.3.2.md)).
+- **Tests**: added `tests/test_stats_history.py` (4 cases: normal values / no divide-by-zero on zero requests / strict-object regression — snapshot may touch only fields that really exist / max_points truncation).
 
-### v3.2.3（2026-08-08）：多轮会话复用修复（parent 链维护）
+### v3.3.1 (2026-08-11): anti-flooding hardening + bilingual docs
 
-- **根因**：v3.2.2 遗留问题——同模式多轮复用 session 时，缓存的 `parent_message_id` 未随轮次更新（始终为 `0`），第二次请求发 `parent_message_id=0` → 上游返回空响应，失败一次后才自愈
-- **修复**：adapter 从 SSE `event: ready` 帧提取 `response_message_id`（非流式同时兼容 `v.response.message_id`），通过新增的 `ready_out` 回调参数返回给 server；`AcquiredAccount.record_message_id()` 将真实 message_id + 实际使用 session 写回 `SESSION_CACHE`（重试换新会话时同步更新 `chat_session_id`），并修复 `create_session()` 未保存 `_cached_session` 引用导致记录失效的问题
-- **接入点**：4 条路径全部接线（OpenAI/Anthropic × 流式/非流式），工具调用分支同样记录
-- 完整清单：`docs/release-notes/v3.2.3.md`
-
-### v3.2.1（2026-08-03）：空响应根因修复
-
-- **根因**：请求过频时上游返回 HTTP 200 + SSE `event: hint`（`type=error`，`finish_reason=rate_limit_reached`，"消息发送过于频繁，请稍后重试"）且**无任何 content token**；adapter 原先不解析 `hint` 事件 → 限流被当成"空内容"返回
-- **修复**：新增 `RateLimitError`/`UpstreamHintError`，非流式 `_scan_hint_errors()` + 流式内联检测 hint（与 toast 同构）；`server` 映射 **429**（限流）/ 502（其他 hint 错误）
-- 完整清单：`docs/release-notes/v3.2.1.md`
-
-### v3.2.2（2026-08-03）：限流自适应 + hif 发送 + 测试覆盖 + 会话缓存修复
-
-- **上游限流自适应**：`RateLimitError` 退避重试（`DEEPSEEK_RATE_LIMIT_RETRY_DELAYS` 默认 `5,15`，每次退避后换新会话）；`DEEPSEEK_JITTER_SECS` 默认 `0.4`（降低触发限流概率）
-- **hif 签名头发送**：`_HifProvider` 拉取 `hif-leim/hif-dliq.deepseek.com/query`（`data.biz_data.value`，`x-hif-ttl` 缓存默认 600s），completion 请求附加 `X-Hif-Leim/Dliq`（create_session 不带）；失败静默降级（不加头）
-- **测试覆盖**：`tests/test_adapter.py`（15 用例，hint/toast/空响应重试/退避/hif）+ `tests/test_account_pool.py`（10 用例，env 兜底/池空/只读保护/持久化），全套 81 测试
-- 流式 toast/hint 检测修复：上游错误 data 为顶层 dict（非 `v` 包装），两者均检查
-- **SESSION_CACHE 模式隔离**：缓存 key 按流式/非流式区分（`stream:`/`nonstream:`），修复"流式创建 session 被非流式复用 → 空响应"；限流/空响应时 `invalidate` 缓存（失败一次后自愈）
-- **已知遗留 → 已修复（v3.2.3）**：同模式多轮复用 session 第二次请求 parent 错误导致的空响应，已通过 SSE `ready` 事件提取 `response_message_id` 维护 parent 链解决（见 v3.2.3 摘要）
-
-### v3.2.0（2026-08-02）：维护版本
-
-- **start.bat 重构**：自动定位 Python 3.10+、检测/创建虚拟环境（`.venv`/`venv`/`env`）、`pip install --dry-run` 校验依赖并自动安装、WebUI dist 缺失时自动 `npm` 构建（`WEBUI_REBUILD=1` 强制重建）、启动前打印访问地址并默认 3s 后自动打开浏览器（`WEBUI_OPEN=0` 跳过）、端口占用只杀本项目进程（PowerShell `Get-CimInstance` 读命令行替代已废弃的 `wmic`；GBK+CRLF 编码）
-- **WebUI**：静态资源 404 修复（vite `base: '/webui/'` + router `basename: '/webui'`）、7 处 bug 修复与界面美化、Playground 重写（参数对应后端真实转发字段、移除无效温度滑块、`reasoning_content` 可视化）、快速/专家两种模型模式（`MODEL_ROUTES` 默认启用）
-- **鉴权**：`/v1/*` 接受有效 admin 会话 token（`verify_admin_token`）
-- **账号池**：env 凭证改为**池空只读兜底**（`_env_fallback`，面板账号优先；不再预加载进池）
-- **上游空响应加固**：`UpstreamEmptyError` + 换新会话重试 1 次 + 502/错误帧
-- **适配器**：`X-Client-Version` 2.0.0 → 2.3.0、删除过时的 `X-App-Version`（HAR 比对确认浏览器不再发送）
-- **hif 签名头**（逆向记录）：浏览器发 `x-hif-leim`/`x-hif-dliq`（值来自 `hif-leim/hif-dliq.deepseek.com/query`，TTL 600s，localStorage 缓存）；v3.2.2 起 adapter 通过 `_HifProvider` 自动拉取并发送（失败静默降级，见 7.13）
-- **已知环境事实**：`wmic` 已在 Win11 24H2+ 移除；`timeout` 命令与 Git Bash GNU coreutils 冲突（脚本用 `ping -n 2` 延时）
-- 完整清单：`docs/release-notes/v3.2.0.md`
-
-### v3.0.0（2026-06）：React WebUI 重写
-
-- 管理面板从 vanilla JS 重写为 **Vite + React 18 + TypeScript + shadcn/ui** SPA（`webui-new/`），6 个页面（登录 / 概览 / 账号池 / Playground / 设置 / 404）
-- 新增 `stats_history.py`（30s 快照滚动窗口）、`GET /admin/api/history`、`GET /admin/api/env`
-- WebUI 产物位于 `webui-new/dist/`，由 `server.py` 在 `/webui/*` 下伺服；旧 `webui/` 已删除
-- **构建要求**：vite `base: '/webui/'` + react-router `basename: '/webui'`，两者缺失会导致资源 404 白屏
+- **Merged PR #11 (anti account-mute)**: upstream concurrency cap `DEEPSEEK_MAX_CONCURRENCY` (default 2) + incremental (delta) prompt + mute detection (`UserMutedError` → 429) + parent cleanup on retry + `SESSION_CACHE_TTL` default 600 → 1800 (see [docs/release-notes/v3.3.1.md](docs/release-notes/v3.3.1.md)).
+- **Docs**: added `README_en.md`, a complete English version + a bilingual language-switcher link at the top; removed the version-log block at the top of the README (changelog lives in docs/release-notes/); added "Non-interactive account-pool configuration" to README/AGENTS.md (accounts.json schema + automation configuration checklist).
 
 ---
 
-## v2.2.0 变更摘要（2026-06）
+## v3.0.0 → v3.2.4 change summary
 
-新增模块：`logger.py`、`crypto.py`、`ip_utils.py`、`token_counter.py`、
-`rate_limiter.py`、`model_router.py`、`session_cache.py`。
+### v3.2.4 (2026-08-11): upstream concurrency cap + incremental prompt (anti history-flood / anti-mute)
 
-主要变化：
+- **Concurrency cap**: `DEEPSEEK_MAX_CONCURRENCY` (default `2`) globally limits in-flight upstream requests (across accounts); requests over the limit queue and wait instead of getting a 503 (`_UPSTREAM_LIMITER` `BoundedSemaphore`, acquired in `_acquire()` before `pool.acquire()`, released idempotently by `AcquiredAccount.release()`). Coding agents (opencode/Claude Code) spawn multiple parallel sub-agents that previously flooded the upstream concurrently and triggered account mutes.
+- **Incremental prompt (delta)**: `ChatSession.sent_prompt` records the full prompt actually sent last round; `AcquiredAccount.prepare_prompt()` does a prefix comparison against the full history the client re-sends — when the history is a continuation of the previous round, only the **newly added tail** is sent upstream (context is maintained server-side by the parent chain); an exact repeat is treated as a retry (re-send) of the same round; a divergent history invalidates the cache and starts a new session. Previously every request re-sent the entire history, and each message in a DeepSeek session embedded all prior rounds (quadratic blow-up, with a strong automation signature — a major cause of account mutes).
+- **Mute detection**: the upstream returns account-level penalties as a 200 + plain JSON `{"data":{"biz_code":5,"biz_msg":"user is muted","mute_until":...}}` (not SSE; old code parsed it as an "empty response"). `UserMutedError` (a `RateLimitError` subclass) is detected on both the streaming and non-streaming paths and thrown immediately (skipping backoff retries), mapped to 429 with the unmute time.
+- **Retry with cleanup**: on a rate-limit/empty-response retry with a new session, the old session's `parent_message_id` is no longer carried over (an invalid parent in the new session would cause the upstream to return empty again).
+- **SESSION_CACHE_TTL default 600 → 1800**: long coding sessions (an agent idle 10+ minutes) are no longer frequently forced to create a new upstream session.
+- Full list: `docs/release-notes/v3.2.4.md`
 
-- **安全**：默认 `HOST=127.0.0.1`；公网 + 默认密码启动时 `SystemExit(2)`；结构化 JSON 日志；`data/accounts.json` 可选 Fernet 加密（启动时透明迁移）；CORS 严格化（空 = 同源）；XFF 白名单 (`TRUSTED_PROXIES`)；安全响应头。
-- **Bug**：`adapter.chat()` 现在返回 `(content, thinking)` 元组；`anthropic_format.build_nonstream_response` 接收 `thinking_text`；`StreamSieve` 改为迭代式排空、`feed("")` 递归被替换为 `while`、捕获缓冲硬上限 1 MB（可配置 `DSML_MAX_BUFFER_BYTES`）；账号错误达到 3 次后自动后台 `check_health` 恢复。
-- **新功能**：`MODEL_ROUTES` 模型路由；`SESSION_CACHE_TTL` 多轮会话（OpenAI `X-Conversation-Id` 头 / Anthropic `metadata.user_id`；历史版本曾使用消息摘要 fallback）；`CLIENT_RPM_PER_KEY` / `CLIENT_RPM_PER_IP` 双维度滑动窗口限流；`usage` 字段返回真实 token 数（tiktoken cl100k_base，缺失时字符启发式）；`/admin/api/stats` 增加 p50/p95/p99 + 成功率。
-- **工程化**：`tests/test_*.py` 56 个 pytest 用例；CI 矩阵 (3.10/3.11/3.12)；SSE 错误帧（OpenAI 流末尾发 `data: {"error":...}` 后 `data: [DONE]`）替代直接抛 500。
+### v3.2.3 (2026-08-08): multi-turn session reuse fix (parent-chain maintenance)
+
+- **Root cause**: a v3.2.2 leftover — when reusing a session across turns in the same mode, the cached `parent_message_id` was not updated per turn (always `0`), so the second request sent `parent_message_id=0` → the upstream returned an empty response, self-healing only after one failure.
+- **Fix**: the adapter extracts `response_message_id` from the SSE `event: ready` frame (non-streaming also accepts `v.response.message_id`) and returns it to the server via the new `ready_out` callback parameter; `AcquiredAccount.record_message_id()` writes the real message_id + the session actually used back into `SESSION_CACHE` (and syncs `chat_session_id` when retrying with a new session), and fixes the issue where `create_session()` did not save the `_cached_session` reference, which invalidated the record.
+- **Wiring points**: all 4 paths wired (OpenAI/Anthropic × streaming/non-streaming), tool-call branches record too.
+- Full list: `docs/release-notes/v3.2.3.md`
+
+### v3.2.1 (2026-08-03): empty-response root-cause fix
+
+- **Root cause**: when requests are too frequent the upstream returns HTTP 200 + an SSE `event: hint` (`type=error`, `finish_reason=rate_limit_reached`, "messages sent too frequently, please retry later") with **no content tokens**; the adapter did not previously parse `hint` events → rate limiting was returned as "empty content".
+- **Fix**: added `RateLimitError`/`UpstreamHintError`, with non-streaming `_scan_hint_errors()` + inline hint detection on the streaming path (mirroring toast); the `server` maps these to **429** (rate limit) / 502 (other hint errors).
+- Full list: `docs/release-notes/v3.2.1.md`
+
+### v3.2.2 (2026-08-03): rate-limit adaptivity + hif sending + test coverage + session-cache fix
+
+- **Upstream rate-limit adaptivity**: `RateLimitError` backoff retries (`DEEPSEEK_RATE_LIMIT_RETRY_DELAYS` default `5,15`, new session after each backoff); `DEEPSEEK_JITTER_SECS` default `0.4` (reduces the chance of tripping rate limiting).
+- **hif signature header sending**: `_HifProvider` fetches `hif-leim/hif-dliq.deepseek.com/query` (`data.biz_data.value`, cached per `x-hif-ttl`, default 600s); completion requests attach `X-Hif-Leim/Dliq` (create_session does not); on failure it silently degrades (no header added).
+- **Test coverage**: `tests/test_adapter.py` (15 cases: hint/toast/empty-response retry/backoff/hif) + `tests/test_account_pool.py` (10 cases: env fallback/empty pool/read-only protection/persistence), 81 tests total.
+- Streaming toast/hint detection fix: the upstream error data is a top-level dict (not wrapped in `v`); both are checked.
+- **SESSION_CACHE mode isolation**: the cache key distinguishes streaming/non-streaming (`stream:`/`nonstream:`), fixing "a session created in streaming mode reused by non-streaming → empty response"; on rate limit/empty response the cache is `invalidate`d (self-heals after one failure).
+- **Known leftover → fixed (v3.2.3)**: the empty response caused by a wrong parent on the second request when reusing a session across turns in the same mode, resolved by extracting `response_message_id` from the SSE `ready` event to maintain the parent chain (see the v3.2.3 summary).
+
+### v3.2.0 (2026-08-02): maintenance release
+
+- **start.bat rewrite**: auto-locate Python 3.10+, detect/create a virtualenv (`.venv`/`venv`/`env`), `pip install --dry-run` to verify dependencies and auto-install, auto `npm` build when the WebUI dist is missing (`WEBUI_REBUILD=1` forces a rebuild), print the access URL before startup and auto-open the browser after 3s by default (`WEBUI_OPEN=0` skips), and on a port conflict kill only this project's processes (PowerShell `Get-CimInstance` reads the command line, replacing the deprecated `wmic`; GBK+CRLF encoding).
+- **WebUI**: static-asset 404 fix (vite `base: '/webui/'` + router `basename: '/webui'`), 7 bug fixes and UI polish, Playground rewrite (parameters mirror what the backend actually forwards, the ineffective temperature slider removed, `reasoning_content` visualized), quick/expert model modes (`MODEL_ROUTES` enabled by default).
+- **Auth**: `/v1/*` accepts a valid admin-session token (`verify_admin_token`).
+- **Account pool**: env credentials changed to a **read-only fallback when the pool is empty** (`_env_fallback`, panel accounts take priority; no longer preloaded into the pool).
+- **Upstream empty-response hardening**: `UpstreamEmptyError` + 1 retry with a new session + 502/error frame.
+- **Adapter**: `X-Client-Version` 2.0.0 → 2.3.0, removed the obsolete `X-App-Version` (HAR comparison confirmed the browser no longer sends it).
+- **hif signature headers** (reverse-engineering notes): the browser sends `x-hif-leim`/`x-hif-dliq` (values from `hif-leim/hif-dliq.deepseek.com/query`, TTL 600s, localStorage cache); since v3.2.2 the adapter auto-fetches and sends them via `_HifProvider` (silent degradation on failure, see 7.13).
+- **Known environment facts**: `wmic` was removed in Win11 24H2+; the `timeout` command conflicts with Git Bash's GNU coreutils (the script uses `ping -n 2` for delays).
+- Full list: `docs/release-notes/v3.2.0.md`
+
+### v3.0.0 (2026-06): React WebUI rewrite
+
+- The admin panel was rewritten from vanilla JS into a **Vite + React 18 + TypeScript + shadcn/ui** SPA (`webui-new/`), with 6 pages (Login / Overview / Account Pool / Playground / Settings / 404).
+- Added `stats_history.py` (30s snapshot rolling window), `GET /admin/api/history`, `GET /admin/api/env`.
+- The WebUI artifacts live in `webui-new/dist/`, served by `server.py` under `/webui/*`; the old `webui/` was removed.
+- **Build requirement**: vite `base: '/webui/'` + react-router `basename: '/webui'`; missing either causes a 404 white screen for assets.
 
 ---
 
-## 目录
+## v2.2.0 change summary (2026-06)
 
-1. [项目概述](#1-项目概述)
-2. [目录结构](#2-目录结构)
-3. [核心数据流](#3-核心数据流)
-4. [PoW 反爬机制](#4-pow-反爬机制)
-5. [会话管理](#5-会话管理)
-6. [SSE 协议格式](#6-sse-协议格式)
-7. [专家模式 (Expert Mode)](#7-专家模式-expert-mode)
-8. [工具调用 (DSML)](#8-工具调用-dsml)
-9. [StreamSieve 流式筛分引擎](#9-streamsieve-流式筛分引擎)
-10. [OpenAI 兼容层](#10-openai-兼容层)
-11. [Anthropic 兼容层](#11-anthropic-兼容层)
-12. [多轮对话与消息组装](#12-多轮对话与消息组装)
-13. [ContentPart 支持](#13-contentpart-支持)
-14. [配置系统](#14-配置系统)
-15. [账号池 (AccountPool)](#15-账号池-accountpool)
-16. [管理后台 (Admin API)](#16-管理后台-admin-api)
-17. [关键算法细节](#17-关键算法细节)
-18. [已知限制与边界情况](#18-已知限制与边界情况)
-19. [常见调试方法](#19-常见调试方法)
-20. [协议变更预警](#20-协议变更预警)
+New modules: `logger.py`, `crypto.py`, `ip_utils.py`, `token_counter.py`,
+`rate_limiter.py`, `model_router.py`, `session_cache.py`.
+
+Main changes:
+
+- **Security**: default `HOST=127.0.0.1`; `SystemExit(2)` when starting on a public bind with the default password; structured JSON logs; optional Fernet encryption for `data/accounts.json` (transparent migration on startup); stricter CORS (empty = same-origin); XFF allowlist (`TRUSTED_PROXIES`); security response headers.
+- **Bugs**: `adapter.chat()` now returns a `(content, thinking)` tuple; `anthropic_format.build_nonstream_response` takes `thinking_text`; `StreamSieve` switched to iterative draining, the `feed("")` recursion replaced with a `while`, a hard 1 MB cap on the capture buffer (configurable via `DSML_MAX_BUFFER_BYTES`); accounts auto-recover via a background `check_health` after reaching 3 errors.
+- **New features**: `MODEL_ROUTES` model routing; `SESSION_CACHE_TTL` multi-turn sessions (OpenAI `X-Conversation-Id` header / Anthropic `metadata.user_id`; older versions used a message-summary fallback); `CLIENT_RPM_PER_KEY` / `CLIENT_RPM_PER_IP` dual-dimension sliding-window rate limiting; the `usage` field returns real token counts (tiktoken cl100k_base, with a character heuristic when missing); `/admin/api/stats` gains p50/p95/p99 + success rate.
+- **Engineering**: `tests/test_*.py` with 56 pytest cases; CI matrix (3.10/3.11/3.12); SSE error frames (the OpenAI stream sends `data: {"error":...}` then `data: [DONE]` at the end) instead of raising 500 directly.
 
 ---
 
-## 1. 项目概述
+## Table of contents
 
-本项目将 DeepSeek Chat 网页版（https://chat.deepseek.com）反向代理为 OpenAI 兼容 API。
+1. [Project Overview](#1-project-overview)
+2. [Directory Structure](#2-directory-structure)
+3. [Core Data Flow](#3-core-data-flow)
+4. [PoW Anti-Scraping Mechanism](#4-pow-anti-scraping-mechanism)
+5. [Session Management](#5-session-management)
+6. [SSE Protocol Format](#6-sse-protocol-format)
+7. [MODE / THINKING / SEARCH Control System](#7-mode--thinking--search-control-system)
+8. [Tool Calls (DSML)](#8-tool-calls-dsml)
+9. [StreamSieve Streaming Sieve Engine](#9-streamsieve-streaming-sieve-engine)
+10. [OpenAI Compatibility Layer](#10-openai-compatibility-layer)
+11. [Anthropic Compatibility Layer](#11-anthropic-compatibility-layer)
+12. [Multi-turn Conversations and Message Assembly](#12-multi-turn-conversations-and-message-assembly)
+13. [ContentPart Support](#13-contentpart-support)
+14. [Configuration System](#14-configuration-system)
+15. [Account Pool (AccountPool)](#15-account-pool-accountpool)
+16. [Admin Backend (Admin API)](#16-admin-backend-admin-api)
+17. [Key Algorithm Details](#17-key-algorithm-details)
+18. [Known Limitations and Edge Cases](#18-known-limitations-and-edge-cases)
+19. [Common Debugging Methods](#19-common-debugging-methods)
+20. [Protocol Change Warnings](#20-protocol-change-warnings)
 
-### 1.1 解决的问题
+---
 
-- DeepSeek 官方 API 需要付费且对非中国大陆用户受限
-- DeepSeek Chat 网页版免费但使用其私有协议，不兼容 OpenAI SDK
-- 网页版有 PoW（Proof of Work）反爬机制，需要自动求解
-- DeepSeek 提供"快速模式"和"专家模式"两种对话能力，接口行为不同
+## 1. Project Overview
 
-### 1.2 核心能力
+This project reverse-proxies the DeepSeek Chat web app (https://chat.deepseek.com) as an OpenAI-compatible API.
 
-| 能力 | 状态 | 说明 |
+### 1.1 Problems it solves
+
+- DeepSeek's official API is paid and restricted for users outside mainland China.
+- The DeepSeek Chat web app is free but uses a private protocol, incompatible with the OpenAI SDK.
+- The web app has a PoW (Proof of Work) anti-scraping mechanism that must be solved automatically.
+- DeepSeek offers two conversation capabilities, "quick mode" and "expert mode", whose interface behaviors differ.
+
+### 1.2 Core capabilities
+
+| Capability | Status | Notes |
 |------|------|------|
-| OpenAI 兼容接口 | ✅ | `/v1/chat/completions`, `/v1/models`, `/health` |
-| Anthropic 兼容接口 | ✅ | `/v1/messages` — Anthropic Claude API 格式 |
-| 流式输出 (SSE) | ✅ | OpenAI chunk 格式 + Anthropic SSE 格式 |
-| 非流式输出 | ✅ | 完整响应 |
-| 多轮对话 | ✅ | 客户端通过 messages 数组管理上下文 |
-| 普通对话 | ✅ | 快速模式 |
-| 专家模式 | ✅ | DeepSeek 推理模型，含 thinking tokens |
-| 工具调用 | ✅ | 基于 DSML 提示词注入（非原生） |
-| ContentPart 数组 | ✅ | content 支持 str 和 array 格式 |
-| PoW 自动求解 | ✅ | WASM 本地求解，0.1-0.3s |
-| 会话管理 | ✅ | 每次请求新建 DeepSeek 会话 |
-| 联网搜索 | ⚠️ | 参数透传，行为取决于 DeepSeek 服务端 |
-| MODE 环境变量控制 | ✅ | 通过 `.env` 强制模式：`auto`/`quick`/`expert` |
-| THINKING 环境变量控制 | ✅ | 通过 `.env` 强制思考：`auto`/`enabled`/`disabled` |
-| SEARCH 环境变量控制 | ✅ | 通过 `.env` 强制联网搜索：`auto`/`enabled`/`disabled` |
-| model_type 与 thinking_enabled 解耦 | ✅ | 两者独立，所有 4 种组合均有效 |
-| finish_reason SSE 结束帧 | ✅ | 流式响应末尾发送 `delta: {}, finish_reason: "stop"` |
+| OpenAI-compatible API | ✅ | `/v1/chat/completions`, `/v1/models`, `/health` |
+| Anthropic-compatible API | ✅ | `/v1/messages` — Anthropic Claude API format |
+| Streaming output (SSE) | ✅ | OpenAI chunk format + Anthropic SSE format |
+| Non-streaming output | ✅ | Full response |
+| Multi-turn conversation | ✅ | The client manages context via the messages array |
+| Normal conversation | ✅ | Quick mode |
+| Expert mode | ✅ | DeepSeek reasoning model, with thinking tokens |
+| Tool calls | ✅ | Based on DSML prompt injection (not native) |
+| ContentPart arrays | ✅ | content supports str and array formats |
+| PoW auto-solve | ✅ | Local WASM solving, 0.1-0.3s |
+| Session management | ✅ | A new DeepSeek session per request |
+| Web search | ⚠️ | Parameter is passed through; behavior depends on the DeepSeek server |
+| MODE env-var control | ✅ | Force a mode via `.env`: `auto`/`quick`/`expert` |
+| THINKING env-var control | ✅ | Force thinking via `.env`: `auto`/`enabled`/`disabled` |
+| SEARCH env-var control | ✅ | Force web search via `.env`: `auto`/`enabled`/`disabled` |
+| model_type decoupled from thinking_enabled | ✅ | Independent; all 4 combinations valid |
+| finish_reason SSE end frame | ✅ | Streaming responses send `delta: {}, finish_reason: "stop"` at the end |
 
-### 1.3 项目版本
+### 1.3 Project version
 
-- 当前主线：`v3.3.2`（2026-09）— 基础功能 + 工具调用 + 专家模式 + 联网搜索 + React WebUI 管理面板 + 上游限流提示解析 + 多轮会话复用（parent 链 + 增量 prompt）+ 上游并发上限 + stats 历史采样修复
-- 自 v3.0.0 起开源版与预览版已合并为单一主线，无独立 `--pre` 分支
+- Current mainline: `v3.3.2` (2026-09) — core features + tool calls + expert mode + web search + React WebUI admin panel + upstream rate-limit hint parsing + multi-turn reuse (parent chain + incremental prompt) + upstream concurrency cap + stats history-sampling fix.
+- Since v3.0.0 the open-source and preview editions are merged into a single mainline, with no separate `--pre` branch.
 
 ---
 
-## 2. 目录结构
+## 2. Directory Structure
 
 ```
-D:\the llaa\DS反代 --pre\
-├── server.py              # FastAPI 服务入口（路由、请求模型、SSE 组装）
-├── adapter.py             # DeepSeek API 适配器（PoW、会话、SSE 解析）
-├── anthropic_format.py    # Anthropic /v1/messages 格式转换层
-├── account_pool.py        # 多账号池管理（CRUD、状态追踪、轮询分配、健康检查）
-├── admin.py               # 管理后台 API（密码认证、请求统计、账号池管理）
-├── tool_dsml.py           # DSML 格式解析器（工具调用协议）
-├── tool_sieve.py          # 流式筛分引擎（实时检测工具调用标签）
-├── sha3_wasm_bg.wasm      # PoW 哈希引擎 WASM 二进制
-├── start.bat              # Windows 一键启动脚本（自动 venv/依赖/WebUI/开浏览器）
-├── webui-new/             # 管理面板前端（v3.0.0+，React SPA，需 npm 构建）
-│   └── dist/              #   构建产物（gitignored），server.py 伺服于 /webui/*
-├── .env                   # 环境配置（含 TOKEN/COOKIE，不提交）
-├── .env.example           # 配置模板（提交到仓库）
-├── requirements.txt       # Python 依赖
-├── README.md              # 用户文档
-└── AGENTS.md              # 本文件
+deepseek-web2api-free\
+├── server.py              # FastAPI entry point (routing, request models, SSE assembly)
+├── adapter.py             # DeepSeek API adapter (PoW, sessions, SSE parsing)
+├── anthropic_format.py    # Anthropic /v1/messages format conversion layer
+├── account_pool.py        # Multi-account pool management (CRUD, state tracking, round-robin, health checks)
+├── admin.py               # Admin backend API (password auth, request stats, account-pool management)
+├── tool_dsml.py           # DSML format parser (tool-call protocol)
+├── tool_sieve.py          # Streaming sieve engine (real-time detection of tool-call tags)
+├── sha3_wasm_bg.wasm      # PoW hash engine WASM binary
+├── start.bat              # Windows one-click launcher (auto venv/deps/WebUI/open browser)
+├── webui-new/             # Admin panel frontend (v3.0.0+, React SPA, needs an npm build)
+│   └── dist/              #   build artifacts (gitignored), served by server.py under /webui/*
+├── .env                   # Environment config (contains TOKEN/COOKIE, not committed)
+├── .env.example           # Config template (committed to the repo)
+├── requirements.txt       # Python dependencies
+├── README.md              # User documentation
+└── AGENTS.md              # This file
 ```
 
-### 2.1 文件详细说明
+### 2.1 File details
 
-#### 核心模块
+#### Core modules
 
-| 文件 | 职责 | 不负责 |
+| File | Responsibility | Not responsible for |
 |------|------|--------|
-| `server.py` | HTTP 路由、请求/响应模型、OpenAI 格式组装、工具调用协调 | PoW 求解、原生 SSE 解析 |
-| `adapter.py` | 与 DeepSeek API 通信、PoW 求解、SSE 流解析、会话创建 | HTTP 路由、OpenAI/Anthropic 格式 |
-| `anthropic_format.py` | Anthropic `/v1/messages` 请求解析、响应组装、SSE 生成 | DeepSeek 协议、HTTP 路由 |
-| `account_pool.py` | 多账号 CRUD、状态追踪（idle/busy/error）、轮询分配、健康检查/重登录 | HTTP 路由、DeepSeek 协议 |
-| `admin.py` | 管理后台 API 端点（密码认证、统计查询、账号池 CRUD、重登录触发） | 前端渲染、DeepSeek 协议 |
-| `tool_dsml.py` | DSML XML 解析与生成、工具提示词构建 | 流式检测、HTTP |
-| `tool_sieve.py` | 流式文本中实时检测 DSML 工具调用标签 | 协议解析、HTTP |
+| `server.py` | HTTP routing, request/response models, OpenAI format assembly, tool-call coordination | PoW solving, native SSE parsing |
+| `adapter.py` | Communicating with the DeepSeek API, PoW solving, SSE stream parsing, session creation | HTTP routing, OpenAI/Anthropic formats |
+| `anthropic_format.py` | Anthropic `/v1/messages` request parsing, response assembly, SSE generation | DeepSeek protocol, HTTP routing |
+| `account_pool.py` | Multi-account CRUD, state tracking (idle/busy/error), round-robin allocation, health check/relogin | HTTP routing, DeepSeek protocol |
+| `admin.py` | Admin backend API endpoints (password auth, stats queries, account-pool CRUD, relogin trigger) | Frontend rendering, DeepSeek protocol |
+| `tool_dsml.py` | DSML XML parsing and generation, tool-prompt building | Streaming detection, HTTP |
+| `tool_sieve.py` | Real-time detection of DSML tool-call tags in streaming text | Protocol parsing, HTTP |
 
-**核心原则：** `adapter.py` 的输出是"裸 token 流"（str 或 dict），`server.py` 和 `anthropic_format.py` 分别负责包装成特定 API 格式。`adapter.py` 不知道任何 API 格式的存在。
+**Core principle:** `adapter.py`'s output is a "raw token stream" (str or dict); `server.py` and `anthropic_format.py` each wrap it into a specific API format. `adapter.py` knows nothing about any API format.
 
-#### 辅助文件
+#### Supporting files
 
-| 文件 | 用途 |
+| File | Purpose |
 |------|------|
-| `sha3_wasm_bg.wasm` | PoW 哈希引擎 WASM 二进制，从 DeepSeek 前端 JavaScript 中提取。通过 `wasmtime` 加载，导出 `wasm_solve` 等函数。版本与 DeepSeek 前端发布绑定。 |
-| `start.bat` | Windows 一键启动脚本（GBK 编码 + CRLF，勿改编码）。流程：定位 Python 3.10+ → 检测/创建虚拟环境（`.venv`/`venv`/`env`）→ `pip install --dry-run` 校验依赖（缺失自动安装）→ WebUI dist 缺失时自动 `npm` 构建 → 端口检查（只杀命令行匹配 `uvicorn`/`server:app`/`server.py`/`ds2api` 的本项目进程，其他进程拒绝杀并提示）→ 打印访问地址并默认 3s 后自动打开浏览器（`WEBUI_OPEN=0` 跳过）。支持 `PORT`/`HOST` 环境变量覆盖。 |
-| `webui-new/` | 管理面板前端（v3.0.0+，Vite + React 18 + TypeScript + shadcn/ui SPA）。源码构建产物在 `webui-new/dist/`（gitignored），由 `server.py` 伺服于 `/webui/*`。**必须**以 `base: '/webui/'` + react-router `basename: '/webui'` 构建，否则资源 404。旧版 `webui/`（vanilla）已删除。 |
-| `requirements.txt` | Python 依赖声明。关键依赖版本要求见下表。 |
-| `.env.example` | 环境配置模板。复制为 `.env` 后填入凭证。提交到仓库但不含敏感信息。 |
+| `sha3_wasm_bg.wasm` | PoW hash engine WASM binary, extracted from DeepSeek's frontend JavaScript. Loaded via `wasmtime`, exports `wasm_solve` and others. Its version is tied to DeepSeek frontend releases. |
+| `start.bat` | Windows one-click launcher (GBK encoding + CRLF, do not change the encoding). Flow: locate Python 3.10+ → detect/create a virtualenv (`.venv`/`venv`/`env`) → `pip install --dry-run` to verify dependencies (auto-install if missing) → auto `npm` build when the WebUI dist is missing → port check (kills only this project's processes whose command line matches `uvicorn`/`server:app`/`server.py`/`ds2api`; refuses to kill others and warns) → print the access URL and auto-open the browser after 3s by default (`WEBUI_OPEN=0` skips). Supports `PORT`/`HOST` environment-variable overrides. |
+| `webui-new/` | Admin panel frontend (v3.0.0+, Vite + React 18 + TypeScript + shadcn/ui SPA). The source build artifacts are in `webui-new/dist/` (gitignored), served by `server.py` under `/webui/*`. **Must** be built with `base: '/webui/'` + react-router `basename: '/webui'`, otherwise assets 404. The old `webui/` (vanilla) was removed. |
+| `requirements.txt` | Python dependency declarations. Key version requirements are in the table below. |
+| `.env.example` | Environment config template. Copy to `.env` and fill in credentials. Committed to the repo but contains no sensitive info. |
 
-**依赖版本说明：**
+**Dependency version notes:**
 
-| 包 | 最低版本 | 用途 | 备注 |
+| Package | Minimum version | Purpose | Notes |
 |---|---------|------|------|
-| `fastapi` | 0.100.0 | Web 框架 | 0.100+ 支持 Pydantic v2 |
-| `uvicorn` | 0.20.0 | ASGI 服务器 | 0.20+ 支持 lifespan |
-| `httpx` | 0.24.0 | HTTP 客户端 | 0.24+ 修复关键连接池 bug |
-| `wasmtime` | 14.0.0 | WASM 运行时 | 14.0+ 是首个稳定支持 Windows 的版本 |
-| `python-dotenv` | 1.0.0 | .env 加载 | 1.0+ 行为稳定 |
+| `fastapi` | 0.100.0 | Web framework | 0.100+ supports Pydantic v2 |
+| `uvicorn` | 0.20.0 | ASGI server | 0.20+ supports lifespan |
+| `httpx` | 0.24.0 | HTTP client | 0.24+ fixes a critical connection-pool bug |
+| `wasmtime` | 14.0.0 | WASM runtime | 14.0+ is the first version with stable Windows support |
+| `python-dotenv` | 1.0.0 | .env loading | 1.0+ behavior is stable |
 
-### 2.2 开发环境搭建
+### 2.2 Development environment setup
 
 ```bash
-# 1. 克隆/进入项目目录
-cd "D:\the llaa\DS反代 --pre"
+# 1. Clone / enter the project directory
+cd deepseek-web2api-free
 
-# 2. 安装依赖
+# 2. Install dependencies
 pip install -r requirements.txt
 
-# 3. 配置凭证（从浏览器 DevTools 获取）
+# 3. Configure credentials (obtained from the browser DevTools)
 copy .env.example .env
-# 在 WebUI「账号池」添加账号，或写入 data/accounts.json；账号凭证不放入 .env
+# Add an account in the WebUI "Account Pool", or write it into data/accounts.json; account credentials do not go in .env
 
-# 4. 启动服务
+# 4. Start the service
 python server.py
-# 或
+# or
 start.bat
 
-# 5. 测试
+# 5. Test
 curl http://localhost:8080/health
 ```
 
-**热重载开发（推荐）：**
+**Hot-reload development (recommended):**
 ```bash
 uvicorn server:app --host 0.0.0.0 --port ${PORT:-8080} --reload
 ```
-`--reload` 会在文件变更时自动重启，但注意它不会自动清理 `__pycache__`（见 §18.5）。
+`--reload` restarts automatically on file changes, but note it does not clean up `__pycache__` (see §18.5).
 
-### 2.3 预览版 vs 开源版差异
+### 2.3 Preview vs open-source edition differences
 
-> **v3.0.0 起已合并**：以下对比仅作历史参考。当前主线同时具备左右两列全部能力（OpenAI + Anthropic + 专家模式 + 联网搜索 + 工具调用 + React WebUI）。
+> **Merged since v3.0.0**: the comparison below is for historical reference only. The current mainline has all capabilities of both columns (OpenAI + Anthropic + expert mode + web search + tool calls + React WebUI).
 
-| 维度 | 开源版 (`v2.0.0`) | 预览版 (`v2.2.0-pre`) |
+| Dimension | Open-source (`v2.0.0`) | Preview (`v2.2.0-pre`) |
 |------|-------------------|----------------------|
-| `adapter.py` 请求体 | 基本字段：`chat_session_id`, `prompt`, `ref_file_ids`, `stream` | 新增：`parent_message_id`, `model_type`, `thinking_enabled`, `search_enabled`, `preempt` |
-| 请求头 | `X-App-Version: 0.0.1` | `X-App-Version: 20241129.1` + 5 个额外版本头 |
-| 会话创建 | 只处理 `biz_data.id` 格式 | 双格式兼容（`id` 或 `chat_session.id`） |
-| `chat()` | 只解析 `response/content APPEND` | 完整 fragment 状态机支持两种模式 |
-| `chat_stream()` | 简单 token 透传 | fragment 状态机 + `__type: "thinking"` 字典输出 |
-| `_msg_counters` | 无 | 新增，追踪 `parent_message_id` |
-| `httpx.Client` 超时 | 60s | 120s |
-| server.py 端点 | 标准 OpenAI | 同上 + `thinking_mode`, `search_enabled` 参数 |
-| SSE 输出 | `content` delta | 同上 + `reasoning_content` delta + `finish_reason: "stop"` 结束帧 |
-| MODE 环境变量 | 无 | `auto`/`quick`/`expert`，通过 `.env` 配置 |
-| THINKING 环境变量 | 无 | `auto`/`enabled`/`disabled`，通过 `.env` 配置 |
-| SEARCH 环境变量 | 无 | `auto`/`enabled`/`disabled`，通过 `.env` 配置 |
-| PORT 环境变量 | 无 | 可配置监听端口（默认 8080），通过 `.env` 或环境变量 |
-| model_type 控制 | 与 thinking_enabled 绑定 | 完全解耦，由 MODE 独立控制 |
-| WASM 线程安全 | 无锁 | `threading.Lock` 保护 Store 并发访问 |
+| `adapter.py` request body | Basic fields: `chat_session_id`, `prompt`, `ref_file_ids`, `stream` | Added: `parent_message_id`, `model_type`, `thinking_enabled`, `search_enabled`, `preempt` |
+| Request headers | `X-App-Version: 0.0.1` | `X-App-Version: 20241129.1` + 5 extra version headers |
+| Session creation | Only handles the `biz_data.id` format | Dual-format compatible (`id` or `chat_session.id`) |
+| `chat()` | Only parses `response/content APPEND` | Full fragment state machine supporting both modes |
+| `chat_stream()` | Simple token pass-through | Fragment state machine + `__type: "thinking"` dict output |
+| `_msg_counters` | None | Added, tracks `parent_message_id` |
+| `httpx.Client` timeout | 60s | 120s |
+| server.py endpoints | Standard OpenAI | Same + `thinking_mode`, `search_enabled` params |
+| SSE output | `content` delta | Same + `reasoning_content` delta + `finish_reason: "stop"` end frame |
+| MODE env var | None | `auto`/`quick`/`expert`, configured via `.env` |
+| THINKING env var | None | `auto`/`enabled`/`disabled`, configured via `.env` |
+| SEARCH env var | None | `auto`/`enabled`/`disabled`, configured via `.env` |
+| PORT env var | None | Configurable listen port (default 8080), via `.env` or env var |
+| model_type control | Bound to thinking_enabled | Fully decoupled, controlled independently by MODE |
+| WASM thread safety | Lockless | `threading.Lock` protects concurrent Store access |
 
 ---
 
-## 3. 核心数据流
+## 3. Core Data Flow
 
-### 3.1 请求完整链路
+### 3.1 Full request path
 
 ```
-客户端 (OpenAI SDK)
-  │  POST /v1/chat/completions  (OpenAI 格式 JSON)
+Client (OpenAI SDK)
+  │  POST /v1/chat/completions  (OpenAI-format JSON)
   ▼
 server.py: chat_completions()
-  │  _build_prompt() → 拼接 messages 为纯文本
-  │  如有 tools → build_dsml_tool_prompt() → 注入 system message
+  │  _build_prompt() → concatenate messages into plain text
+  │  if tools present → build_dsml_tool_prompt() → inject into the system message
   ▼
 adapter.py: create_session()
-  │  POST /api/v0/chat/create_pow_challenge → 获取 challenge
-  │  WASM 求解 PoW nonce
-  │  POST /api/v0/chat_session/create → 获取 session_id
+  │  POST /api/v0/chat/create_pow_challenge → get challenge
+  │  WASM solve the PoW nonce
+  │  POST /api/v0/chat_session/create → get session_id
   ▼
-adapter.py: chat() 或 chat_stream()
-  │  POST /api/v0/chat/completion (含 PoW Header + 请求体)
-  │  带 thinking_enabled、search_enabled、model_type、preempt 等参数
+adapter.py: chat() or chat_stream()
+  │  POST /api/v0/chat/completion (with PoW header + request body)
+  │  carries thinking_enabled, search_enabled, model_type, preempt, etc.
   ▼
-  SSE 流解析 (逐行)
-  │  处理 event: ready → 提取 request_message_id / response_message_id
-  │  处理 data: {"v": {"response": {...}}} → 首个响应事件
-  │  处理 data: {"p":"response/fragments/-1/content","o":"APPEND","v":"..."}
-  │  处理 data: {"v":"token"} → 纯 token 事件
-  │  处理 data: {"p":"response/status"} → 状态变更
+  SSE stream parsing (line by line)
+  │  handle event: ready → extract request_message_id / response_message_id
+  │  handle data: {"v": {"response": {...}}} → first response event
+  │  handle data: {"p":"response/fragments/-1/content","o":"APPEND","v":"..."}
+  │  handle data: {"v":"token"} → plain token event
+  │  handle data: {"p":"response/status"} → status change
   ▼
 server.py: event_stream() / _handle_nonstream()
-  │  adapter 产出 → str (普通token) 或 dict (control/thinking/status)
-  │  StreamSieve 筛分工具调用
-  │  非流式 → 组装完整 JSON 响应
-  │  流式 → yield OpenAI SSE chunk
+  │  adapter yields → str (plain token) or dict (control/thinking/status)
+  │  StreamSieve sieves out tool calls
+  │  non-streaming → assemble a full JSON response
+  │  streaming → yield OpenAI SSE chunks
   ▼
-客户端收到 OpenAI 格式响应
+Client receives an OpenAI-format response
 ```
 
-### 3.2 数据格式转换
+### 3.2 Data-format conversion
 
 ```
-客户端发送 → OpenAI JSON → server.py 转成纯文本 prompt
+Client sends → OpenAI JSON → server.py turns it into a plain-text prompt
 ↓
-adapter.py 发送 → DeepSeek SSE → adapter.py 解析为 token 流
+adapter.py sends → DeepSeek SSE → adapter.py parses into a token stream
 ↓
-server.py 接收 → token 流 → 组装 OpenAI SSE chunk
+server.py receives → token stream → assembles OpenAI SSE chunks
 ↓
-客户端收到 → OpenAI JSON
+Client receives → OpenAI JSON
 ```
 
 ---
 
-## 4. PoW 反爬机制
+## 4. PoW Anti-Scraping Mechanism
 
-### 4.1 原理
+### 4.1 Principle
 
-DeepSeek Chat 的 API 使用 Proof of Work 防止滥用。每次请求前必须先求解一个哈希难题。
+DeepSeek Chat's API uses Proof of Work to prevent abuse. A hash puzzle must be solved before each request.
 
-**约束条件：**
-- challenge 有 `expire_at`（Unix 时间戳），过期后不可用
-- 每个 challenge 仅对指定 `target_path` 有效
-- 难度通过 `difficulty` 参数控制（浮点数，越大越难）
-- 签名验证机制确保 challenge 不被篡改
+**Constraints:**
+- A challenge has an `expire_at` (Unix timestamp) and is unusable after expiry.
+- Each challenge is valid only for the specified `target_path`.
+- Difficulty is controlled by the `difficulty` parameter (float; larger is harder).
+- A signature-verification mechanism ensures the challenge is not tampered with.
 
-### 4.2 通信流程
+### 4.2 Communication flow
 
 ```
 1. POST /api/v0/chat/create_pow_challenge
-   → 请求体: {"target_path": "/api/v0/chat/completion"}
-   → 响应体: {
+   → request body: {"target_path": "/api/v0/chat/completion"}
+   → response body: {
        "data": {
          "biz_data": {
            "challenge": {
@@ -362,79 +362,79 @@ DeepSeek Chat 的 API 使用 Proof of Work 防止滥用。每次请求前必须�
        }
      }
 
-2. WASM 求解 nonce
-   - 输入: challenge, salt, expire_at, difficulty
-   - 输出: nonce (int) — 满足难度条件的值
-   
-3. 构造 PoW Token
+2. WASM solve the nonce
+   - Input: challenge, salt, expire_at, difficulty
+   - Output: nonce (int) — a value satisfying the difficulty condition
+
+3. Construct the PoW token
    → base64(json({"algorithm":"DeepSeekHashV1","challenge":...,"salt":...,"answer":<nonce>,"signature":...,"target_path":...}))
-   → 放入请求头: X-DS-PoW-Response
+   → put into the request header: X-DS-PoW-Response
 ```
 
-### 4.3 WASM 求解器 (`_WASMSolver`)
+### 4.3 WASM solver (`_WASMSolver`)
 
-`_WASMSolver` 封装 wasmtime 运行时，加载 DeepSeek 官方 WASM 二进制。
+`_WASMSolver` wraps the wasmtime runtime and loads DeepSeek's official WASM binary.
 
-**WASM 导出函数：**
-| 函数 | 参数 | 说明 |
+**WASM exported functions:**
+| Function | Parameters | Notes |
 |------|------|------|
-| `wasm_solve` | (stack_ptr, chal_ptr, chal_len, prefix_ptr, prefix_len, difficulty) | 核心求解函数 |
-| `memory` | — | WASM 线性内存 |
-| `__wbindgen_add_to_stack_pointer` | offset | WASM 栈指针调整 |
-| `__wbindgen_export_0` | (len, align) → ptr | WASM 内存分配（malloc） |
-| `__wbindgen_export_1` | (ptr, old_len, new_len, align) → ptr | WASM 内存重分配（realloc） |
-| `__wbindgen_export_2` | (ptr, len, align) | WASM 内存释放（free） |
+| `wasm_solve` | (stack_ptr, chal_ptr, chal_len, prefix_ptr, prefix_len, difficulty) | Core solver function |
+| `memory` | — | WASM linear memory |
+| `__wbindgen_add_to_stack_pointer` | offset | WASM stack-pointer adjustment |
+| `__wbindgen_export_0` | (len, align) → ptr | WASM memory allocation (malloc) |
+| `__wbindgen_export_1` | (ptr, old_len, new_len, align) → ptr | WASM memory reallocation (realloc) |
+| `__wbindgen_export_2` | (ptr, len, align) | WASM memory free |
 
-**导出函数验证：** 三个 wasm-bindgen 导出函数的签名通过 wasmtime API 程序化验证：
-- `export_0` (malloc): 2个 i32 参数 → 返回 i32（ptr）
-- `export_1` (realloc): 4个 i32 参数 → 返回 i32（ptr）
-- `export_2` (free): 3个 i32 参数 → 无返回值（void）
+**Exported-function verification:** the signatures of the three wasm-bindgen exports are verified programmatically via the wasmtime API:
+- `export_0` (malloc): 2 i32 params → returns i32 (ptr)
+- `export_1` (realloc): 4 i32 params → returns i32 (ptr)
+- `export_2` (free): 3 i32 params → no return value (void)
 
-**内存管理：** `_encode()` 每次调用通过 `malloc` 分配 WASM 内存，分配记录在 `_allocations` 列表中。`solve()` 的 `finally` 块中通过 `__wbindgen_export_2` 释放所有分配。确保即使求解失败也不会内存泄漏。
+**Memory management:** `_encode()` allocates WASM memory via `malloc` on each call, recording allocations in the `_allocations` list. `solve()`'s `finally` block frees all allocations via `__wbindgen_export_2`, ensuring no memory leak even if solving fails.
 
-**线程安全：** 使用 `threading.Lock` 保护 `solve()` 方法。WASM `Store` 实例不可跨线程共享，但通过锁确保同一时刻只有一个线程操作 `Store`。在 FastAPI 的多线程 ASGI 模式下（如使用多个 uvicorn worker），每个 worker 有独立的 `DeepSeekAdapter` 和 `_WASMSolver` 实例，互不干扰。
+**Thread safety:** a `threading.Lock` protects the `solve()` method. The WASM `Store` instance cannot be shared across threads, but the lock ensures only one thread operates the `Store` at a time. Under FastAPI's multithreaded ASGI mode (e.g. with multiple uvicorn workers), each worker has its own `DeepSeekAdapter` and `_WASMSolver` instance, which do not interfere.
 
-**求解算法（`solve` 方法）：**
+**Solving algorithm (`solve` method):**
 ```
 prefix = salt + "_" + expire_at + "_"
-stack_ptr = add_to_stack(-16)         // 为返回值分配栈空间
-chal_ptr, chal_len = encode(challenge) // 将 challenge 写入 WASM 内存
-prefix_ptr, prefix_len = encode(prefix) // 将 prefix 写入 WASM 内存
+stack_ptr = add_to_stack(-16)         // allocate stack space for the return value
+chal_ptr, chal_len = encode(challenge) // write challenge into WASM memory
+prefix_ptr, prefix_len = encode(prefix) // write prefix into WASM memory
 wasm_solve(stack_ptr, chal_ptr, chal_len, prefix_ptr, prefix_len, difficulty)
-// 从栈上读取结果:
-//   bytes[stack_ptr:stack_ptr+4] → 成功标志 (0=失败)
+// read the result from the stack:
+//   bytes[stack_ptr:stack_ptr+4] → success flag (0=failure)
 //   bytes[stack_ptr+8:stack_ptr+16] → nonce (f64)
-add_to_stack(16)                       // 恢复栈指针
+add_to_stack(16)                       // restore the stack pointer
 ```
 
-**崩溃安全：** WASM 求解失败（`ret == 0`）时抛出 `PoWError`，调用方需重试整个流程。
+**Crash safety:** when WASM solving fails (`ret == 0`) a `PoWError` is raised, and the caller must retry the whole flow.
 
-### 4.4 性能
+### 4.4 Performance
 
-- 单次求解约 0.1-0.3s（取决于 difficulty）
-- `_WASMSolver` 实例被 `DeepSeekAdapter` 懒加载且复用（单例）
-- WASM `Store` 实例不可跨线程共享，但本项目为单线程运行
+- A single solve takes about 0.1-0.3s (depending on difficulty).
+- The `_WASMSolver` instance is lazily loaded and reused (a singleton) by `DeepSeekAdapter`.
+- The WASM `Store` instance cannot be shared across threads, but this project runs single-threaded.
 
-### 4.5 局限性
+### 4.5 Limitations
 
-- 算法为 DeepSeek 定制版 `DeepSeekHashV1`（修改版 Keccak/SHA3）
-- WASM 二进制 `sha3_wasm_bg.wasm` 从 DeepSeek 前端提取，可能随前端更新而变化
-- 某些情况下 challenge 可能返回空或格式变更，需 `_get_challenge` 的错误处理
+- The algorithm is DeepSeek's custom `DeepSeekHashV1` (a modified Keccak/SHA3).
+- The WASM binary `sha3_wasm_bg.wasm` is extracted from DeepSeek's frontend and may change as the frontend updates.
+- In some cases the challenge may come back empty or with a changed format, requiring error handling in `_get_challenge`.
 
 ---
 
-## 5. 会话管理
+## 5. Session Management
 
-### 5.1 设计决策：无状态
+### 5.1 Design decision: stateless
 
-**核心决策：** 每次 API 请求都创建全新 DeepSeek 会话，请求结束后不保留上下文。
+**Core decision:** every API request creates a brand-new DeepSeek session, and no context is kept after the request ends.
 
-**原因：**
-- 对齐 OpenAI API 行为：客户端通过完整 `messages` 数组管理上下文
-- 简化服务端状态管理：无需处理会话过期、并发冲突
-- DeepSeek 会话有 TTL（约 259200 秒/3 天），维持活跃会增加复杂度
+**Reasons:**
+- Aligns with OpenAI API behavior: the client manages context via the full `messages` array.
+- Simplifies server-side state: no need to handle session expiry or concurrency conflicts.
+- DeepSeek sessions have a TTL (about 259200 seconds / 3 days); keeping them alive adds complexity.
 
-### 5.2 Session 创建
+### 5.2 Session creation
 
 ```python
 # adapter.py
@@ -446,144 +446,144 @@ def create_session(self) -> str:
         headers=headers,
     )
     data = resp.json()
-    # 响应格式分两种（取决于 X-App-Version）:
+    # The response format has two shapes (depending on X-App-Version):
     #   V0.0.1: biz_data.id
     #   V20241129.1: biz_data.chat_session.id
 ```
 
-**响应格式兼容性**（历史观察：早期 `X-App-Version` 不同值时 create_session 返回两种格式；当前适配器 `create_session()` 对两种格式均兼容，见 5.2）：
+**Response-format compatibility** (historical observation: early on, different `X-App-Version` values made create_session return two formats; the current adapter's `create_session()` is compatible with both, see 5.2):
 
-旧版本头 (`X-App-Version: 0.0.1`)：
+Old version header (`X-App-Version: 0.0.1`):
 ```json
 {"data": {"biz_data": {"id": "session-uuid"}}}
 ```
 
-新版本头 (`X-App-Version: 20241129.1`)：
+New version header (`X-App-Version: 20241129.1`):
 ```json
 {"data": {"biz_data": {"chat_session": {"id": "session-uuid", "model_type": "default", ...}}}}
 ```
 
-### 5.3 Session 存储
+### 5.3 Session storage
 
 ```python
-# server.py — 内存 dict
+# server.py — in-memory dict
 _sessions: dict[str, str] = {}
-# key:   proxy session UUID (由 server.py 生成)
-# value: DeepSeek session ID (由 adapter.create_session() 返回)
+# key:   proxy session UUID (generated by server.py)
+# value: DeepSeek session ID (returned by adapter.create_session())
 ```
 
-`_get_session()` 生成代理 session ID，调用 adapter 创建真实 session，建立映射。
-`_get_ds_session()` 根据代理 session ID 查找真实 session。
+`_get_session()` generates a proxy session ID, calls the adapter to create a real session, and builds the mapping.
+`_get_ds_session()` looks up the real session by proxy session ID.
 
-### 5.4 消息 ID 追踪
+### 5.4 Message-ID tracking
 
-对于专家模式，每个会话内的消息需要递增 `parent_message_id`。
+For expert mode, each message within a session needs an incrementing `parent_message_id`.
 
 ```python
 # adapter.py
 self._msg_counters: dict[str, int] = {}  # key: session_id, value: count
 ```
 
-- 每次 `_send_completion` 调用时自增
-- 首次请求: `parent_message_id: null`
-- 后续请求: `parent_message_id: 1, 2, 3...`
+- Incremented on each `_send_completion` call.
+- First request: `parent_message_id: null`.
+- Later requests: `parent_message_id: 1, 2, 3...`.
 
-**注意：** 当前 session-per-request 设计下，`parent_message_id` 始终为 `null`（因为每次都是新 session 的第一条消息）。但保留递增逻辑以支持未来的会话复用。如果将来改为复用 session，`parent_message_id` 将变为必需——DeepSeek 服务端用它来关联上下文。
+**Note:** under the current session-per-request design, `parent_message_id` is always `null` (each is the first message of a new session). But the incrementing logic is kept to support future session reuse. If sessions are reused in the future, `parent_message_id` becomes required — the DeepSeek server uses it to correlate context.
 
-### 5.5 Session 存储策略
+### 5.5 Session storage strategy
 
-当前 `_sessions` 使用**简单的内存 dict**：
+The current `_sessions` uses a **simple in-memory dict**:
 
 ```python
 # server.py
 _sessions: dict[str, str] = {}
 ```
 
-每次请求创建一个新 session（`_get_session()`），键值对保留在字典中。历史上曾尝试添加 TTL 自动清理，但由于以下原因**选择不实现**：
-- session-per-request 设计下，单个请求生命周期极短，session 不会被复用
-- DeepSeek 服务端的 session TTL 约 3 天（259200s），旧 session ID 无实际危害
-- Python dict 的内存效率足以应付常规负载（100 万次请求约 150MB）
-- 增加清理逻辑增加了代码复杂度，且对正确性无帮助
+Each request creates a new session (`_get_session()`), and the key/value pair stays in the dict. TTL-based auto-cleanup was once attempted but **deliberately not implemented**, for these reasons:
+- Under the session-per-request design, each request's lifecycle is very short and the session is not reused.
+- The DeepSeek server's session TTL is about 3 days (259200s); stale session IDs cause no real harm.
+- A Python dict is memory-efficient enough for normal loads (about 150MB for 1M requests).
+- Cleanup logic adds code complexity and does not help correctness.
 
 ---
 
 
 
-## 6. SSE 协议格式
+## 6. SSE Protocol Format
 
-### 6.1 DeepSeek 自定义 SSE
+### 6.1 DeepSeek custom SSE
 
-DeepSeek Chat 使用自定义 SSE 格式（非标准 OpenAI SSE）。每条数据行形如：
-
-```
-event: ready   ← 可选事件类型
-data: {...}    ← JSON 数据
-```
-
-**核心数据结构：**
-
-事件以 JSON 格式在 `data:` 行传输，常见结构：
+DeepSeek Chat uses a custom SSE format (not the standard OpenAI SSE). Each data line looks like:
 
 ```
-A. 普通 token:    {"v": "Hello"}
-B. 操作事件:      {"p": "response/content", "o": "APPEND", "v": "World"}
-C. 响应元数据:    {"v": {"response": {"message_id": 4, ...}}}
-D. 状态变更:      {"p": "response/status", "o": "SET", "v": "FINISHED"}
-E. 批量更新:      {"p": "response", "o": "BATCH", "v": [...]}
-F. 准备事件:      {"request_message_id": 1, "response_message_id": 2, "model_type": "expert"}
+event: ready   ← optional event type
+data: {...}    ← JSON data
 ```
 
-### 6.2 事件类型详解
+**Core data structures:**
 
-#### type A: 纯 token 事件
+Events are transmitted as JSON on `data:` lines; common shapes:
+
+```
+A. Plain token:     {"v": "Hello"}
+B. Operation event: {"p": "response/content", "o": "APPEND", "v": "World"}
+C. Response metadata: {"v": {"response": {"message_id": 4, ...}}}
+D. Status change:   {"p": "response/status", "o": "SET", "v": "FINISHED"}
+E. Batch update:    {"p": "response", "o": "BATCH", "v": [...]}
+F. Ready event:     {"request_message_id": 1, "response_message_id": 2, "model_type": "expert"}
+```
+
+### 6.2 Event types in detail
+
+#### type A: plain token event
 ```json
 {"v": "Hello"}
 ```
-- 无 `p` 和 `o` 字段
-- `v` 值为字符串 → 追加到当前 fragment 的内容
-- 在快速模式中等效为普通回复内容
-- 在专家模式中，归属由当前 `frag_type` 状态决定
+- No `p` or `o` field.
+- `v` is a string → appended to the current fragment's content.
+- In quick mode this is equivalent to normal reply content.
+- In expert mode its assignment is decided by the current `frag_type` state.
 
-#### type B: 操作路径事件
+#### type B: operation-path event
 ```json
 {"p": "response/content", "o": "APPEND", "v": "World"}
 ```
-- `p`: 路径（类比文件系统路径）
-- `o`: 操作（APPEND/SET/BATCH）
-- `v`: 值
+- `p`: path (analogous to a filesystem path)
+- `o`: operation (APPEND/SET/BATCH)
+- `v`: value
 
-常见路径和操作组合：
+Common path/operation combinations:
 
-| `p` | `o` | `v` 类型 | 含义 |
+| `p` | `o` | `v` type | Meaning |
 |-----|-----|---------|------|
-| `response/content` | `APPEND` | string | 快速模式内容追加 |
-| `response/fragments/-1/content` | `APPEND` | string | 专家模式当前 fragment 内容追加 |
-| `response/fragments/-1/content` | — | string | 无操作字段时同上 |
-| `response/fragments/-1/elapsed_secs` | `SET` | number | fragment 耗时 |
-| `response/fragments` | `APPEND` | array | 新 fragment 追加（切换类型） |
-| `response/status` | `SET` | string | 状态变更（FINISHED 等） |
-| `accumulated_token_usage` | `SET` | number | token 用量 |
-| `response` | `BATCH` | array | 批量更新（多个 `{p,v}` 对） |
+| `response/content` | `APPEND` | string | quick-mode content append |
+| `response/fragments/-1/content` | `APPEND` | string | expert-mode current-fragment content append |
+| `response/fragments/-1/content` | — | string | same as above when there is no operation field |
+| `response/fragments/-1/elapsed_secs` | `SET` | number | fragment elapsed time |
+| `response/fragments` | `APPEND` | array | new fragment appended (type switch) |
+| `response/status` | `SET` | string | status change (FINISHED, etc.) |
+| `accumulated_token_usage` | `SET` | number | token usage |
+| `response` | `BATCH` | array | batch update (multiple `{p,v}` pairs) |
 
-#### type C: 响应元数据
+#### type C: response metadata
 ```json
 {"v": {"response": {"message_id": 4, "parent_id": 3, "fragments": [...], "thinking_enabled": true, ...}}}
 ```
-- 出现在 SSE 流的早期（首个 data 事件）
-- 包含完整的响应元数据：message_id、parent_id、fragments、状态等
-- `fragments` 数组包含初始片段信息
-- `status: "WIP"` 表示生成中，`"FINISHED"` 表示完成
+- Appears early in the SSE stream (the first data event).
+- Contains full response metadata: message_id, parent_id, fragments, status, etc.
+- The `fragments` array contains the initial fragment info.
+- `status: "WIP"` means generating, `"FINISHED"` means done.
 
-#### type D: 准备事件（event: ready）
+#### type D: ready event (event: ready)
 ```
 event: ready
 data: {"request_message_id": 1, "response_message_id": 2, "model_type": "expert"}
 ```
-- 仅在 `event: ready` 行之后出现
-- 告知请求/响应的 message_id 映射关系
-- `model_type` 指示实际使用的模型类型（`"default"` 或 `"expert"`）
+- Appears only after an `event: ready` line.
+- Tells you the request/response message_id mapping.
+- `model_type` indicates the actual model type used (`"default"` or `"expert"`).
 
-### 6.3 快速模式 SSE 事件序列
+### 6.3 Quick-mode SSE event sequence
 
 ```
 event: ready
@@ -606,9 +606,9 @@ event: close
 data: {"click_behavior":"none","auto_resume":false}
 ```
 
-### 6.4 专家模式 SSE 事件序列
+### 6.4 Expert-mode SSE event sequence
 
-专家模式使用 **Fragment 系统**，响应内容由多个 fragment 组成（THINK → RESPONSE）。
+Expert mode uses the **Fragment system**; the response content is composed of multiple fragments (THINK → RESPONSE).
 
 ```
 event: ready
@@ -617,27 +617,27 @@ data: {"request_message_id":1,"response_message_id":2,"model_type":"expert"}
 event: update_session
 data: {"updated_at": ...}
 
-// 初始化响应，带 fragments[0] = THINK
-data: {"v":{"response":{"message_id":2, "fragments":[{"id":2,"type":"THINK","content":"初始思考内容"}], "thinking_enabled":true, ...}}}
+// initialize the response, with fragments[0] = THINK
+data: {"v":{"response":{"message_id":2, "fragments":[{"id":2,"type":"THINK","content":"initial reasoning"}], "thinking_enabled":true, ...}}}
 
-// 思考阶段的 token（归属当前 THINK fragment）
-data: {"v":"思考"}
-data: {"p":"response/fragments/-1/content","o":"APPEND","v":"的过程"}
-data: {"v":"中的推理"}
+// thinking-phase tokens (belong to the current THINK fragment)
+data: {"v":"reasoning"}
+data: {"p":"response/fragments/-1/content","o":"APPEND","v":" process"}
+data: {"v":" continues"}
 
-// fragment 切换：追加 RESPONSE 片段
+// fragment switch: append the RESPONSE fragment
 data: {"p":"response/fragments","o":"APPEND","v":[{"id":3,"type":"RESPONSE","content":"","references":[],"stage_id":1}]}
 data: {"p":"response/fragments/-1/elapsed_secs","o":"SET","v":7.21}
 
-// 正式回答阶段的 token（归属 RESPONSE fragment）
-data: {"p":"response/fragments/-1/content","v":"最终"}
-data: {"v":"回答"}
-data: {"v":"内容"}
+// answer-phase tokens (belong to the RESPONSE fragment)
+data: {"p":"response/fragments/-1/content","v":"final"}
+data: {"v":" answer"}
+data: {"v":" content"}
 
-// 批量更新（token 用量 + 状态）
+// batch update (token usage + status)
 data: {"p":"response","o":"BATCH","v":[{"p":"accumulated_token_usage","v":457},{"p":"quasi_status","v":"FINISHED"}]}
 
-// 最终状态
+// final status
 data: {"p":"response/status","o":"SET","v":"FINISHED"}
 
 event: update_session
@@ -647,59 +647,59 @@ event: close
 data: {"click_behavior":"none","auto_resume":false}
 ```
 
-### 6.5 Fragment 类型
+### 6.5 Fragment types
 
-| 类型 | 含义 | 包含内容 |
+| Type | Meaning | Contents |
 |------|------|---------|
-| `THINK` | 推理/思考过程 | 模型的内部推理链，用户可见 |
-| `RESPONSE` | 最终回答 | 面向用户的正式回复 |
-| `TEXT` | 文本片段 | 通用文本（少见） |
+| `THINK` | Reasoning/thinking process | The model's internal reasoning chain, visible to the user |
+| `RESPONSE` | Final answer | The formal user-facing reply |
+| `TEXT` | Text fragment | Generic text (rare) |
 
-### 6.5 SSE 事件类型参考
+### 6.5 SSE event-type reference
 
 #### `event: ready`
 
-SSE 流中的第一个事件，携带请求/响应的 message_id 映射：
+The first event in the SSE stream, carrying the request/response message_id mapping:
 
 ```
 event: ready
 data: {"request_message_id": 1, "response_message_id": 2, "model_type": "expert"}
 ```
 
-- `request_message_id` — DeepSeek 服务端分配的请求 ID
-- `response_message_id` — DeepSeek 服务端分配的响应 ID（后续的 `{"v": {"response": {...}}}` 中的 `message_id` 与此一致）
-- `model_type` — 实际使用的模型类型（`"default"` 或 `"expert"`），与请求体中的 `model_type` 一致
+- `request_message_id` — the request ID assigned by the DeepSeek server.
+- `response_message_id` — the response ID assigned by the DeepSeek server (the `message_id` in the later `{"v": {"response": {...}}}` matches this).
+- `model_type` — the actual model type used (`"default"` or `"expert"`), matching the request body's `model_type`.
 
 #### `event: update_session`
 
-会话更新事件，在关键节点（响应开始、响应结束）之间出现：
+Session-update event, appearing between key points (response start, response end):
 
 ```
 event: update_session
 data: {"updated_at": 1778077771}
 ```
 
-- 通常出现两次：一次在 ready 之后，一次在 close 之前
-- `updated_at` 是服务端更新会话时间戳
-- 当前实现中**忽略此事件**，不执行任何操作
+- Usually appears twice: once after ready, once before close.
+- `updated_at` is the server's session update timestamp.
+- The current implementation **ignores this event** and does nothing.
 
 #### `event: close`
 
-SSE 流结束事件：
+SSE stream end event:
 
 ```
 event: close
 data: {"click_behavior": "none", "auto_resume": false}
 ```
 
-- `click_behavior` — 网页端点击行为（"none" 或 "resume"）
-- `auto_resume` — 是否自动恢复
-- 当前实现中**忽略此事件**，不执行任何操作
-- 流关闭后不应再有 data 行
+- `click_behavior` — the web app's click behavior ("none" or "resume").
+- `auto_resume` — whether to auto-resume.
+- The current implementation **ignores this event** and does nothing.
+- There should be no more data lines after the stream closes.
 
-#### `BATCH` 操作类型
+#### The `BATCH` operation type
 
-operation 值为 `"BATCH"` 时，`v` 是一个数组，包含多个 `{p, v}` 对：
+When the operation value is `"BATCH"`, `v` is an array containing multiple `{p, v}` pairs:
 
 ```json
 {"p": "response", "o": "BATCH", "v": [
@@ -708,78 +708,78 @@ operation 值为 `"BATCH"` 时，`v` 是一个数组，包含多个 `{p, v}` 对
 ]}
 ```
 
-BATCH 中常见的 `p` 值：
+Common `p` values inside BATCH:
 
-| 路径 | v 类型 | 含义 |
+| Path | v type | Meaning |
 |------|--------|------|
-| `accumulated_token_usage` | number | 累积 token 用量 |
-| `quasi_status` | string | 准状态（"FINISHED" 等） |
-| `response/fragments/-1/elapsed_secs` | number | 当前 fragment 耗时 |
-| `response/status` | string | 状态（"WIP", "FINISHED"） |
-| `response/content` | string | 完整或增量内容 |
+| `accumulated_token_usage` | number | cumulative token usage |
+| `quasi_status` | string | quasi-status ("FINISHED", etc.) |
+| `response/fragments/-1/elapsed_secs` | number | current fragment elapsed time |
+| `response/status` | string | status ("WIP", "FINISHED") |
+| `response/content` | string | full or incremental content |
 
-BATCH 通常在快速模式中出现，专家模式中使用较少。当前实现中对 BATCH 事件**不做特殊处理**（没有对应的解析分支），但非流式模式通过 `_parse_sse()` 捕获所有事件。
+BATCH usually appears in quick mode and is used less in expert mode. The current implementation does **no special handling** of BATCH events (there is no matching parse branch), but the non-streaming mode captures all events via `_parse_sse()`.
 
 #### `accumulated_token_usage`
 
-出现在 BATCH 或独立 SET 事件中，代表当前已消耗的 token 总数（注意：不是本次响应的完整数量，而是累积值）。当前未作为 `usage` 返回给客户端（`server.py` 的 `usage` 字段硬编码为 `-1`）。
+Appears in a BATCH or a standalone SET event, representing the total tokens consumed so far (note: not the full count for this response, but a cumulative value). Currently not returned to the client as `usage` (`server.py`'s `usage` field is hardcoded to `-1`).
 
 #### `quasi_status`
 
-DeepSeek 内部使用的状态字段，与 `response/status` 同步。值为 `"FINISHED"` 时表示响应结束。当前实现中不处理此字段，依赖 `response/status SET` 事件。
+A status field used internally by DeepSeek, synced with `response/status`. A value of `"FINISHED"` means the response ended. The current implementation does not handle this field and relies on the `response/status SET` event.
 
-### 6.6 非流式 SSE 解析器 `_parse_sse()`
+### 6.6 Non-streaming SSE parser `_parse_sse()`
 
-`adapter.py` 的 `_parse_sse()` 用于非流式模式，与 `chat_stream()` 的流式解析器有几点不同：
+`adapter.py`'s `_parse_sse()` is used in non-streaming mode and differs from `chat_stream()`'s streaming parser in a few ways:
 
-| 特性 | `_parse_sse()` (非流式) | `chat_stream()` (流式) |
+| Feature | `_parse_sse()` (non-streaming) | `chat_stream()` (streaming) |
 |------|------------------------|----------------------|
-| 输入 | 完整响应文本 (str) | `resp.iter_lines()` 生成器 |
-| 解析时机 | 一次性解析所有事件 | 逐行实时处理 |
-| event 追踪 | 追踪 `current_event` 但未使用 | 追踪 `current_event` 但未使用 |
-| JSON 失败处理 | 存储原始字符串 | 跳过该行 |
-| 输出 | `list[(event_type, data)]` | `yield str/dict` |
-| Fragment 状态机 | 在 `chat()` 中实现（遍历事件列表） | 内联在解析循环中 |
+| Input | Full response text (str) | `resp.iter_lines()` generator |
+| Parse timing | Parses all events at once | Processes line by line in real time |
+| event tracking | Tracks `current_event` but unused | Tracks `current_event` but unused |
+| JSON-failure handling | Stores the raw string | Skips the line |
+| Output | `list[(event_type, data)]` | `yield str/dict` |
+| Fragment state machine | Implemented in `chat()` (iterating the event list) | Inline in the parse loop |
 
-`_parse_sse()` 是一个**通用解析器**，不关心具体业务逻辑。fragment 状态机等业务逻辑在调用方（`chat()`）中实现。这是与流式模式的架构差异——流式模式在解析循环中直接嵌入状态机。
+`_parse_sse()` is a **generic parser** that does not care about specific business logic. The fragment state machine and other business logic are implemented in the caller (`chat()`). This is an architectural difference from streaming mode — streaming embeds the state machine directly in the parse loop.
 
 ---
 
-## 7. MODE / THINKING / SEARCH 控制系统
+## 7. MODE / THINKING / SEARCH Control System
 
-### 7.1 设计思路
+### 7.1 Design idea
 
-DeepSeek 的 API 有三个独立参数控制模型行为：
-- **`model_type`**: `"default"`（快速模式）或 `"expert"`（专家模式）
-- **`thinking_enabled`**: `true/false` — 是否输出推理过程
-- **`search_enabled`**: `true/false` — 是否启用联网搜索
+DeepSeek's API has three independent parameters controlling model behavior:
+- **`model_type`**: `"default"` (quick mode) or `"expert"` (expert mode)
+- **`thinking_enabled`**: `true/false` — whether to output the reasoning process
+- **`search_enabled`**: `true/false` — whether to enable web search
 
-**关键认知：这三个参数完全独立。**
+**Key insight: these three parameters are fully independent.**
 
-历史版本曾错误地将 `thinking_enabled=true` 等同于专家模式。实际 `model_type="default"`（快速模式）+ `thinking_enabled=true` 也是有效组合——快速模式可以同时开启思考。同样，`search_enabled` 与 `model_type`、`thinking_enabled` 完全独立。
+Older versions mistakenly equated `thinking_enabled=true` with expert mode. In reality `model_type="default"` (quick mode) + `thinking_enabled=true` is also a valid combination — quick mode can also enable thinking. Likewise `search_enabled` is fully independent of `model_type` and `thinking_enabled`.
 
-项目通过三个 `.env` 环境变量暴露这三个自由度：
+The project exposes these three degrees of freedom via three `.env` environment variables:
 
-| 环境变量 | 控制参数 | 可选值 |
+| Env var | Controlled parameter | Values |
 |---------|---------|-------|
 | `MODE` | `model_type` | `auto` / `quick` / `expert` |
 | `THINKING` | `thinking_enabled` | `auto` / `enabled` / `disabled` |
 | `SEARCH` | `search_enabled` | `auto` / `enabled` / `disabled` |
 
-`auto` 表示"由客户端 request 中的对应字段决定"，非 `auto` 值会覆盖客户端传参。
+`auto` means "decided by the corresponding field in the client request"; a non-`auto` value overrides the client's parameter.
 
-### 7.2 实现方式（`server.py`）
+### 7.2 Implementation (`server.py`)
 
 ```python
-# server.py 模块级
+# server.py module level
 MODE = os.environ.get("MODE", "auto").strip().lower()
 THINKING = os.environ.get("THINKING", "auto").strip().lower()
 SEARCH = os.environ.get("SEARCH", "auto").strip().lower()
 
-# chat_completions() 中
+# in chat_completions()
 if MODE == "expert":
     model_type = "expert"
-else:  # "quick" 或 "auto"
+else:  # "quick" or "auto"
     model_type = "default"
 
 if THINKING == "enabled":
@@ -797,149 +797,149 @@ else:  # "auto"
     search = req.search_enabled or False
 ```
 
-注意 `model_type` 在非 `MODE=expert` 时设为 `"default"`（非 `None`）。这与 DeepSeek 原生请求格式一致。
+Note that `model_type` is set to `"default"` (not `None`) when `MODE` is not `expert`. This matches DeepSeek's native request format.
 
-### 7.3 八种组合及 OpenAI SSE 行为
+### 7.3 Eight combinations and OpenAI SSE behavior
 
-| MODE | THINKING | SEARCH | model_type | thinking_enabled | search_enabled | 实际效果 |
+| MODE | THINKING | SEARCH | model_type | thinking_enabled | search_enabled | Actual effect |
 |------|----------|--------|------------|-----------------|---------------|---------|
-| quick | disabled | auto | `"default"` | `false` | 由客户端 | 快速模式，无思考 |
-| quick | enabled | disabled | `"default"` | `true` | `false` | 快速模式 + 思考，关闭搜索 |
-| quick | enabled | enabled | `"default"` | `true` | `true` | 快速 + 思考 + 搜索 |
-| expert | disabled | auto | `"expert"` | `false` | 由客户端 | 专家模式，无思考 |
-| expert | enabled | auto | `"expert"` | `true` | 由客户端 | 完整专家模式 |
-| expert | enabled | enabled | `"expert"` | `true` | `true` | 专家 + 思考 + 搜索 |
-| auto | auto | auto | `"default"` | `req.thinking_mode` | `req.search_enabled` | 完全由客户端决定 |
-| quick | auto | enabled | `"default"` | `req.thinking_mode` | `true` | 快速模式 + 强制搜索 |
+| quick | disabled | auto | `"default"` | `false` | from client | quick mode, no thinking |
+| quick | enabled | disabled | `"default"` | `true` | `false` | quick mode + thinking, search off |
+| quick | enabled | enabled | `"default"` | `true` | `true` | quick + thinking + search |
+| expert | disabled | auto | `"expert"` | `false` | from client | expert mode, no thinking |
+| expert | enabled | auto | `"expert"` | `true` | from client | full expert mode |
+| expert | enabled | enabled | `"expert"` | `true` | `true` | expert + thinking + search |
+| auto | auto | auto | `"default"` | `req.thinking_mode` | `req.search_enabled` | fully client-decided |
+| quick | auto | enabled | `"default"` | `req.thinking_mode` | `true` | quick mode + forced search |
 
-所有组合均已通过原始 SSE 抓包验证。
+All combinations have been verified against raw SSE captures.
 
-**MODE=auto 时的回退行为：**
-- MODE=auto → model_type="default"（快速模式）
+**Fallback behavior when MODE=auto:**
+- MODE=auto → model_type="default" (quick mode)
 - THINKING=auto → thinking = req.thinking_mode or False
 - SEARCH=auto → search = req.search_enabled or False
 
-### 7.4 SEARCH 环境变量详解
+### 7.4 SEARCH env var in detail
 
-`SEARCH` 控制 `search_enabled` 参数，决定模型是否可以联网搜索实时信息。
+`SEARCH` controls the `search_enabled` parameter, deciding whether the model can search the web for real-time information.
 
-| 值 | 效果 | search_enabled |
+| Value | Effect | search_enabled |
 |----|------|---------------|
-| `auto` | 由客户端请求中的 `search_enabled` 决定 | `req.search_enabled or False` |
-| `enabled` | 强制开启联网搜索 | `True` |
-| `disabled` | 强制关闭联网搜索 | `False` |
+| `auto` | decided by the request's `search_enabled` | `req.search_enabled or False` |
+| `enabled` | force web search on | `True` |
+| `disabled` | force web search off | `False` |
 
-**注意：**
-- `search_enabled` 只是告知模型"可以联网搜索"，模型自主决定是否需要搜索
-- 搜索结果以 `[citation:N]` 引用标记形式出现在回复中，这些标记会被 `_clean_dsml_text()` 自动去除
-- 该参数与 `model_type`、`thinking_enabled` 完全独立，所有 2×2×2=8 种组合均有效
+**Notes:**
+- `search_enabled` only tells the model "you may search the web"; the model decides for itself whether it needs to search.
+- Search results appear in the reply as `[citation:N]` reference markers, which are stripped automatically by `_clean_dsml_text()`.
+- This parameter is fully independent of `model_type` and `thinking_enabled`; all 2×2×2=8 combinations are valid.
 
-### 7.5 "快速模式 + 思考" 的 SSE 格式
+### 7.5 SSE format for "quick mode + thinking"
 
-快速模式也使用 Fragment 系统（无需 `model_type: "expert"`），所以 SSE 格式与专家模式无异：
+Quick mode also uses the Fragment system (no `model_type: "expert"` needed), so its SSE format is identical to expert mode:
 
 ```
-// 初始响应带 fragments[0] = THINK
-data: {"v":{"response":{"fragments":[{"type":"THINK","content":"思考过程..."}],...}}}
+// initial response with fragments[0] = THINK
+data: {"v":{"response":{"fragments":[{"type":"THINK","content":"reasoning..."}],...}}}
 
-// 思考 token
-data: {"v":"思考"}
-data: {"p":"response/fragments/-1/content","o":"APPEND","v":"推理中"}
+// thinking tokens
+data: {"v":"reasoning"}
+data: {"p":"response/fragments/-1/content","o":"APPEND","v":"in progress"}
 
-// 切换到 RESPONSE
+// switch to RESPONSE
 data: {"p":"response/fragments","o":"APPEND","v":[{"type":"RESPONSE",...}]}
 
-// 内容 token
-data: {"v":"最终"}
+// content tokens
+data: {"v":"final"}
 
-// 结束
+// end
 data: {"p":"response/status","o":"SET","v":"FINISHED"}
 ```
 
-### 7.6 Expert Mode（专家模式）核心区别
+### 7.6 Expert Mode core differences
 
-当 `model_type="expert"` 时，除 MODE 控制外，还有以下额外差异：
+When `model_type="expert"`, beyond MODE control there are these extra differences:
 
-| 维度 | 快速模式 | 专家模式 |
+| Dimension | Quick mode | Expert mode |
 |------|---------|---------|
 | `model_type` | `"default"` | `"expert"` |
-| SSE 内容格式 | 同上（均可能用 fragments） | 同上（均可能用 fragments） |
-| Fragment 系统 | 可选（模型自主决定） | 一定有 THINK → RESPONSE |
-| `reasoning_content` | 取决于 THINKING | 取决于 THINKING |
-| 请求头要求 | 宽松 | 需 `X-Client-Version: 2.3.0` 等（见 7.7） |
+| SSE content format | same as above (both may use fragments) | same as above (both may use fragments) |
+| Fragment system | optional (model decides) | always has THINK → RESPONSE |
+| `reasoning_content` | depends on THINKING | depends on THINKING |
+| Request-header requirements | lenient | needs `X-Client-Version: 2.3.0` etc. (see 7.7) |
 
-实际上 DeepSeek 的快速模式和专家模式在 SSE 协议层差异极小，`model_type` 主要影响模型的选择与其推理深度。
+In practice DeepSeek's quick and expert modes differ very little at the SSE protocol level; `model_type` mainly affects which model is chosen and its reasoning depth.
 
-### 7.7 请求头要求（2026-08 现状）
+### 7.7 Request-header requirements (as of 2026-08)
 
-从 HAR 抓包（2026-08-02，浏览器 Chrome 150）确认的当前请求头：
+Current request headers confirmed from a HAR capture (2026-08-02, browser Chrome 150):
 
 ```
-X-Client-Version: 2.3.0          ← 当前浏览器版本（旧 2.0.0 时代已过）
+X-Client-Version: 2.3.0          ← current browser version (the old 2.0.0 era is over)
 X-Client-Platform: web
 X-Client-Locale: zh_CN
 X-Client-Timezone-Offset: 28800
 x-client-bundle-id: com.deepseek.chat
-X-Hif-Leim / X-Hif-Dliq          ← 签名头（v3.2.2 起 adapter 通过 _HifProvider 自动发送，见 7.13）
+X-Hif-Leim / X-Hif-Dliq          ← signature headers (since v3.2.2 the adapter auto-sends them via _HifProvider, see 7.13)
 ```
 
-**`X-App-Version` 已废弃**：2026-08 真实浏览器不再发送该头（旧版本 `20241129.1`/`2.0.0` 时代已过）。adapter 自 v3.2.0 起已删除该头。
+**`X-App-Version` is deprecated**: as of 2026-08 the real browser no longer sends this header (the old `20241129.1`/`2.0.0` era is over). The adapter removed this header in v3.2.0.
 
-> 历史：v2.x 时代 `X-App-Version: 0.0.1` 会导致服务端返回 `"Update to the latest version to use Expert."`（toast 事件，v3.2.0 已解析透出）。当前上游的"版本过旧"判断主要基于 `X-Client-Version`。
+> History: in the v2.x era `X-App-Version: 0.0.1` made the server return `"Update to the latest version to use Expert."` (a toast event, parsed and surfaced since v3.2.0). The upstream's current "version too old" judgment is based mainly on `X-Client-Version`.
 
-其他浏览器自动发送的 `sec-ch-ua`、`sec-fetch-*` 头未被严格校验（但 TLS/JA3 指纹疑似被检测——自动化指纹（curl_cffi/tls-client）在高频时会被上游限流，见 v3.2.1 摘要）。
+Other headers the browser sends automatically (`sec-ch-ua`, `sec-fetch-*`) are not strictly validated (but TLS/JA3 fingerprints are apparently detected — automation fingerprints (curl_cffi/tls-client) get rate-limited by the upstream at high frequency, see the v3.2.1 summary).
 
-### 7.8 状态机（`chat_stream` 中的 `frag_type`）
+### 7.8 State machine (`frag_type` in `chat_stream`)
 
 ```python
-frag_type = None  # 状态: None | 'thinking' | 'content'
+frag_type = None  # state: None | 'thinking' | 'content'
 ```
 
-状态转换：
+State transitions:
 
 ```
-[初始] None
+[initial] None
   │
-  ├─ 收到响应中 fragments[0].type == "THINK" → frag_type = "thinking"
+  ├─ response has fragments[0].type == "THINK" → frag_type = "thinking"
   │    │
-  │    ├─ 收到 "response/fragments APPEND" 且 type="RESPONSE" → frag_type = "content"
+  │    ├─ receive "response/fragments APPEND" with type="RESPONSE" → frag_type = "content"
   │    │    │
-  │    │    └─ 后续 token 作为 content 发出
+  │    │    └─ subsequent tokens emitted as content
   │    │
-  │    └─ 期间所有 token 作为 __type="thinking" 发出
+  │    └─ meanwhile all tokens emitted as __type="thinking"
   │
-  └─ 收到响应中 fragments 为空或无 THINK → frag_type = "content"
+  └─ response has empty fragments or no THINK → frag_type = "content"
 ```
 
-状态机在两种模式下都运行——无论是 `model_type="default"`（快速模式）还是 `model_type="expert"`（专家模式），DeepSeek 都可能返回 THINK fragment。区别在于专家模式下 THINK fragment 几乎一定会出现，而快速模式下由模型自主决定。
+The state machine runs in both modes — whether `model_type="default"` (quick) or `model_type="expert"` (expert), DeepSeek may return a THINK fragment. The difference is that in expert mode a THINK fragment almost always appears, whereas in quick mode the model decides for itself.
 
-### 7.9 SSE `reasoning_content` 字段
+### 7.9 The SSE `reasoning_content` field
 
-OpenAI 的 Stream Options 中，`reasoning_content` 是一个非标准但被多个厂商使用的字段（DeepSeek 官方 API、OpenAI o1 等）。本项目在流式输出中：
+In OpenAI's Stream Options, `reasoning_content` is a non-standard field used by several vendors (DeepSeek's official API, OpenAI o1, etc.). In streaming output this project:
 
-1. **首个 thinking token 时发出 `{"reasoning_content": ""}`**（空帧，标志着 thinking 开始）
-2. 后续每个 thinking token 发出 `{"reasoning_content": "..."}`
-3. 切换到 content 阶段后恢复 `{"content": "..."}`
-4. **流结束时发出 `{"finish_reason": "stop"}`**（§7.10）
+1. **Emits `{"reasoning_content": ""}` on the first thinking token** (an empty frame marking the start of thinking).
+2. Emits `{"reasoning_content": "..."}` for each subsequent thinking token.
+3. Resumes `{"content": "..."}` after switching to the content phase.
+4. **Emits `{"finish_reason": "stop"}` at the end of the stream** (§7.10).
 
-**空 `reasoning_content: ""` 的陷阱：**
+**The empty `reasoning_content: ""` trap:**
 
-初始版本无条件在首次 content 前发射空帧。当 THINKING=disabled 时，这个空帧被部分客户端（如 Claude Code）解释为"响应只有空 reasoning"，导致 `parts: []`、`finish: "other"`——整个回复消失。
+The initial version emitted the empty frame unconditionally before the first content. When THINKING=disabled, some clients (e.g. Claude Code) interpreted this empty frame as "the response has only empty reasoning", producing `parts: []`, `finish: "other"` — the entire reply disappeared.
 
-**修复（2026-05-06）：** 在流式处理中，`reasoning_content: ""` 只会在满足以下条件时发射：
-1. 正在处理 thinking token（`adapter` 产出 `__type:"thinking"` 字典）→ 无条件发射（已在 thinking 流程中，合理）
-2. 正在处理 content token 且 `role_sent=False` → **仅当 `thinking_mode=True` 时发射**
+**Fix (2026-05-06):** in streaming, `reasoning_content: ""` is emitted only when:
+1. Processing a thinking token (`adapter` yields an `__type:"thinking"` dict) → emitted unconditionally (already in the thinking flow, reasonable).
+2. Processing a content token with `role_sent=False` → **emitted only when `thinking_mode=True`**.
 
 ```python
 # server.py _handle_stream event_stream()
 
-# Thinking 路径：无条件发射空帧（因为已经在 thinking 块里）
+# Thinking path: emit the empty frame unconditionally (already inside the thinking block)
 if not role_sent:
     yield _openai_chunk(proxy_id, reasoning_content="")
     role_sent = True
 yield _openai_chunk(proxy_id, reasoning_content=content)
 
-# Text 路径：只有 thinking_mode=True 时才发射空帧
+# Text path: emit the empty frame only when thinking_mode=True
 if not role_sent:
     if thinking_mode:
         yield _openai_chunk(proxy_id, reasoning_content="")
@@ -947,9 +947,9 @@ if not role_sent:
 yield _openai_chunk(proxy_id, content=evt.data)
 ```
 
-### 7.10 `finish_reason: "stop"` 结束帧
+### 7.10 The `finish_reason: "stop"` end frame
 
-**问题：** 流式响应中缺少 `finish_reason` 结束帧。标准 OpenAI SSE 格式要求在 `[DONE]` 之前发送一个空 delta + `finish_reason`：
+**Problem:** the streaming response lacked a `finish_reason` end frame. The standard OpenAI SSE format requires an empty delta + `finish_reason` before `[DONE]`:
 
 ```json
 data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
@@ -957,43 +957,43 @@ data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
 data: [DONE]
 ```
 
-原代码只在 tool_calls 路径中由 `_emit_tool_calls_chunks` 发送了 `finish_reason: "tool_calls"`，而正常结束路径直接发 `[DONE]`，缺少 `finish_reason: "stop"`。
+The original code only sent `finish_reason: "tool_calls"` from `_emit_tool_calls_chunks` on the tool_calls path, while the normal end path sent `[DONE]` directly, missing `finish_reason: "stop"`.
 
-**影响：** 部分客户端将缺少 `finish_reason` 的流标记为 `finish: "other"`，可能导致响应处理异常（如只取到 reasoning 部分、不显示 content 等）。
+**Impact:** some clients mark a stream lacking `finish_reason` as `finish: "other"`, possibly causing abnormal response handling (e.g. only the reasoning part is kept, content is not displayed).
 
-**修复（2026-05-07）：** 在正常结束路径添加：
+**Fix (2026-05-07):** add on the normal end path:
 
 ```python
 yield _openai_chunk(proxy_id, finish=True)
 yield "data: [DONE]\n\n"
 ```
 
-`_openai_chunk(proxy_id, finish=True)` 产出：
+`_openai_chunk(proxy_id, finish=True)` yields:
 ```json
 {"delta": {}, "finish_reason": "stop"}
 ```
 
-**涉及位置：** 1 处（正常结束路径）。tool_calls 路径（3 处）已有 `finish_reason: "tool_calls"`，无需修改。
+**Affected locations:** 1 (the normal end path). The tool_calls paths (3 of them) already have `finish_reason: "tool_calls"` and need no change.
 
-### 7.11 非流式模式的限制
+### 7.11 Non-streaming mode limitation
 
-`adapter.chat()` 在非流式模式下只返回 `response/content` 或 `response/fragments/-1/content` 中的 **RESPONSE 部分内容**。THINK 内容不会在返回值中包含。这是因为非流式模式下：
+In non-streaming mode `adapter.chat()` returns only the **RESPONSE content** from `response/content` or `response/fragments/-1/content`. THINK content is not included in the return value. This is because in non-streaming mode:
 
-- 如果使用 `response/content APPEND`，内容已包含最终回复
-- 如果使用 fragments 方式，`chat()` 只收集 RESPONSE fragment 的内容
+- If `response/content APPEND` is used, the content already includes the final reply.
+- If the fragments approach is used, `chat()` collects only the RESPONSE fragment's content.
 
-如需要非流式模式同时返回 thinking 和 content，需修改 `chat()` 方法支持结构化返回。
+To return both thinking and content in non-streaming mode, the `chat()` method would need to be modified to support a structured return.
 
-### 7.12 请求体字段详解
+### 7.12 Request-body fields in detail
 
-完整请求体包含以下字段（`adapter.py:171-181`）：
+The full request body contains the following fields (`adapter.py:171-181`):
 
 ```json
 {
   "chat_session_id": "<session-uuid>",
   "parent_message_id": null,
   "model_type": "default",
-  "prompt": "User: 你好",
+  "prompt": "User: Hello",
   "ref_file_ids": [],
   "stream": true,
   "thinking_enabled": false,
@@ -1002,200 +1002,200 @@ yield "data: [DONE]\n\n"
 }
 ```
 
-| 字段 | 类型 | 快速模式 | 专家模式 | 说明 |
+| Field | Type | Quick mode | Expert mode | Notes |
 |------|------|---------|---------|------|
-| `chat_session_id` | string | 必填 | 必填 | `create_session()` 返回的会话 ID |
-| `parent_message_id` | int/null | null | null | 上一条消息的 ID，首条为 null |
-| `model_type` | string | `"default"` | `"expert"` | **关键开关**，由 MODE 环境变量决定 |
-| `prompt` | string | 必填 | 必填 | 拼接后的纯文本 prompt |
-| `ref_file_ids` | list | `[]` | `[]` | 文件引用 ID，始终为空（不支持文件上传） |
-| `stream` | bool | 按需 | 按需 | 服务端 SSE 流式开关 |
-| `thinking_enabled` | bool | 由 THINKING 决定 | 由 THINKING 决定 | 启用推理过程输出 |
-| `search_enabled` | bool | 由 SEARCH 决定 | 由 SEARCH 决定 | 启用联网搜索 |
-| `preempt` | bool | false | false | 抢占模式，始终为 false |
+| `chat_session_id` | string | required | required | session ID returned by `create_session()` |
+| `parent_message_id` | int/null | null | null | ID of the previous message, null for the first |
+| `model_type` | string | `"default"` | `"expert"` | **key switch**, decided by the MODE env var |
+| `prompt` | string | required | required | concatenated plain-text prompt |
+| `ref_file_ids` | list | `[]` | `[]` | file-reference IDs, always empty (no file upload) |
+| `stream` | bool | as needed | as needed | server-side SSE streaming switch |
+| `thinking_enabled` | bool | decided by THINKING | decided by THINKING | enable reasoning output |
+| `search_enabled` | bool | decided by SEARCH | decided by SEARCH | enable web search |
+| `preempt` | bool | false | false | preempt mode, always false |
 
-**`model_type`、`thinking_enabled`、`search_enabled` 的协作：**
+**How `model_type`, `thinking_enabled`, `search_enabled` cooperate:**
 
-| 场景 | model_type | thinking_enabled | search_enabled | 说明 |
+| Scenario | model_type | thinking_enabled | search_enabled | Notes |
 |------|-----------|-----------------|---------------|------|
-| 纯快速模式 | `"default"` | `false` | `false` | 基础模式 |
-| 快速+思考 | `"default"` | `true` | `false` | 快速响应但附带推理过程 |
-| 快速+搜索 | `"default"` | `false` | `true` | 快速响应 + 联网搜索 |
-| 专家无思考 | `"expert"` | `false` | `false` | 专家模型但不输出推理（罕见） |
-| 完整专家 | `"expert"` | `true` | `true` | 专家模型 + 完整推理 + 联网搜索 |
+| Pure quick mode | `"default"` | `false` | `false` | basic mode |
+| Quick + thinking | `"default"` | `true` | `false` | fast response with reasoning attached |
+| Quick + search | `"default"` | `false` | `true` | fast response + web search |
+| Expert, no thinking | `"expert"` | `false` | `false` | expert model but no reasoning output (rare) |
+| Full expert | `"expert"` | `true` | `true` | expert model + full reasoning + web search |
 
-#### `preempt` 字段
+#### The `preempt` field
 
-`preempt: false` 表示不抢占当前正在进行的响应。如果设为 `true`，理论上可以中断同一会话中正在生成的回复并开始新回复。当前实现始终为 `false`。误设为 `true` 可能导致未定义行为。
+`preempt: false` means "do not preempt the response currently in progress". If set to `true`, it could in theory interrupt a reply being generated in the same session and start a new one. The current implementation always uses `false`. Setting it to `true` by mistake may cause undefined behavior.
 
-#### `ref_file_ids` 字段
+#### The `ref_file_ids` field
 
-DeepSeek Chat 网页版支持上传文件（如图片、PDF），上传后文件会获得一个 ID，通过此字段附加到对话中。当前适配器不支持文件上传，因此始终传空数组。如需要实现，需要：
-1. 额外端点：文件上传 → 获取 file_id
-2. 将 file_id 传入 `ref_file_ids`
-3. 清理服务端的文件关联
+The DeepSeek Chat web app supports uploading files (images, PDFs); after upload a file gets an ID, attached to the conversation via this field. The current adapter does not support file upload, so it always passes an empty array. To implement it you would need:
+1. An extra endpoint: file upload → get a file_id.
+2. Pass the file_id into `ref_file_ids`.
+3. Clean up the server-side file association.
 
-#### `search_enabled` 行为
+#### `search_enabled` behavior
 
-`search_enabled: true` 告诉 DeepSeek 模型在需要时可以联网搜索。此参数透传给服务端后：
-- 服务端决定是否搜索（模型自主判断）
-- 搜索结果会以 `[citation:N]` 形式出现在回复中
-- 当前实现中 `_clean_dsml_text()` 会去除 `[citation:N]` 标记
-- 目前在联网模式下**未大规模测试**，被标记为 ⚠️ 状态
+`search_enabled: true` tells the DeepSeek model it may search the web when needed. After this parameter is passed through to the server:
+- The server decides whether to search (the model judges for itself).
+- Search results appear in the reply as `[citation:N]`.
+- The current implementation strips `[citation:N]` markers in `_clean_dsml_text()`.
+- Web-search mode is **not heavily tested** yet, so it is marked ⚠️.
 
-#### `stream` 字段行为
+#### `stream` field behavior
 
-注意 `stream` 在 `adapter.py` 和 `server.py` 中的含义不同：
-- **adapter 层**：`stream=True` 时服务端以 SSE 流返回；`stream=False` 时一次性返回完整响应体
-- **server 层**：streaming 由 `server.py` 的路由选择 `_handle_stream` 还是 `_handle_nonstream`，但内部始终调用 `adapter.chat_stream()`（流式）或 `adapter.chat()`（非流式），不存在 "用非流式 adapter 实现流式 server" 的路径
+Note that `stream` means different things in `adapter.py` and `server.py`:
+- **adapter layer**: `stream=True` returns an SSE stream from the server; `stream=False` returns the full response body at once.
+- **server layer**: streaming is decided by `server.py`'s routing choosing `_handle_stream` vs `_handle_nonstream`, but internally it always calls `adapter.chat_stream()` (streaming) or `adapter.chat()` (non-streaming) — there is no "streaming server implemented with a non-streaming adapter" path.
 
-### 7.13 透传参数全景：客户端 → server → 上游 DeepSeek
+### 7.13 Pass-through parameter panorama: client → server → upstream DeepSeek
 
-> 本节回答一个问题：**客户端发的每个字段，最终以什么形态、什么值打到 `chat.deepseek.com` 上游**。所有信息对应 `adapter.py` 实际代码（请求体构造、`_base_headers`）。
+> This section answers one question: **in what form and with what value does each client field finally hit `chat.deepseek.com` upstream.** All info corresponds to the actual `adapter.py` code (request-body construction, `_base_headers`).
 
-#### 上游三个端点（BASE_URL = `https://chat.deepseek.com`）
+#### The three upstream endpoints (BASE_URL = `https://chat.deepseek.com`)
 
-| 端点 | 用途 | 请求体 |
+| Endpoint | Purpose | Request body |
 |------|------|--------|
-| `POST /api/v0/chat/create_pow_challenge` | 获取 PoW 挑战 | `{"target_path": "/api/v0/chat/completion"}` |
-| `POST /api/v0/chat_session/create` | 创建会话 | `{"target_path": "/api/v0/chat/completion"}` |
-| `POST /api/v0/chat/completion` | 对话（流式/非流式共用） | 见下 |
+| `POST /api/v0/chat/create_pow_challenge` | get the PoW challenge | `{"target_path": "/api/v0/chat/completion"}` |
+| `POST /api/v0/chat_session/create` | create a session | `{"target_path": "/api/v0/chat/completion"}` |
+| `POST /api/v0/chat/completion` | conversation (shared by streaming/non-streaming) | see below |
 
-#### `/api/v0/chat/completion` 请求体（adapter 实际发送，逐字段）
+#### `/api/v0/chat/completion` request body (what the adapter actually sends, field by field)
 
-| 字段 | 值来源 | 说明 |
+| Field | Value source | Notes |
 |------|--------|------|
-| `chat_session_id` | `create_session()` 返回 | 会话 UUID |
-| `parent_message_id` | adapter `_msg_counters` 或 server 会话缓存 | 首条 `null`；多轮由 server 层 `SESSION_CACHE_TTL` 缓存回传 |
-| `model_type` | server 决策（MODEL_ROUTES/MODE） | `"default"`（快速）\| `"expert"`（专家），**关键开关** |
-| `prompt` | server `_build_prompt()` | 客户端 messages 拼接后的纯文本 |
-| `ref_file_ids` | 固定 `[]` | 不支持文件上传 |
-| `stream` | server 层 `req.stream` | `true`=SSE 流式 / `false`=一次性返回 |
-| `thinking_enabled` | server 决策（THINKING/客户端） | 推理过程开关，**与 `model_type` 独立** |
-| `search_enabled` | server 决策（SEARCH/客户端） | 联网搜索开关 |
-| `preempt` | 固定 `false` | 抢占模式；勿设 `true`（未定义行为） |
+| `chat_session_id` | returned by `create_session()` | session UUID |
+| `parent_message_id` | adapter `_msg_counters` or the server session cache | `null` for the first; across turns, returned by the server's `SESSION_CACHE_TTL` cache |
+| `model_type` | server decision (MODEL_ROUTES/MODE) | `"default"` (quick) \| `"expert"` (expert), **key switch** |
+| `prompt` | server `_build_prompt()` | client messages concatenated into plain text |
+| `ref_file_ids` | fixed `[]` | no file upload |
+| `stream` | server-layer `req.stream` | `true`=SSE streaming / `false`=return at once |
+| `thinking_enabled` | server decision (THINKING/client) | reasoning switch, **independent of `model_type`** |
+| `search_enabled` | server decision (SEARCH/client) | web-search switch |
+| `preempt` | fixed `false` | preempt mode; do not set `true` (undefined behavior) |
 
-#### 请求头（`_base_headers`，模拟真实浏览器）
+#### Request headers (`_base_headers`, mimicking a real browser)
 
-| 头 | 值 |
+| Header | Value |
 |----|----|
-| `User-Agent` / `Sec-Ch-Ua` / `Sec-Ch-Ua-Mobile` / `Sec-Ch-Ua-Platform` | Chrome 指纹（`DEEPSEEK_IMPERSONATE` 关联 curl_cffi 指纹） |
-| `Accept` / `Accept-Encoding` / `Accept-Language` | 浏览器风格（`gzip, deflate, br, zstd` / `zh-CN,...`） |
+| `User-Agent` / `Sec-Ch-Ua` / `Sec-Ch-Ua-Mobile` / `Sec-Ch-Ua-Platform` | Chrome fingerprint (`DEEPSEEK_IMPERSONATE` ties into the curl_cffi fingerprint) |
+| `Accept` / `Accept-Encoding` / `Accept-Language` | browser style (`gzip, deflate, br, zstd` / `zh-CN,...`) |
 | `Content-Type` | `application/json` |
-| `Authorization` | `Bearer <DeepSeek token>`（账号凭证） |
+| `Authorization` | `Bearer <DeepSeek token>` (account credential) |
 | `Origin` / `Referer` | `https://chat.deepseek.com/` |
 | `Priority` | `u=1, i` |
 | `Sec-Fetch-Dest` / `Sec-Fetch-Mode` / `Sec-Fetch-Site` | `empty` / `cors` / `same-origin` |
-| `X-App-Version` / `X-Client-Version` | `2.0.0`（过低会被上游拒绝专家模式） |
+| `X-App-Version` / `X-Client-Version` | `2.0.0` (too low is rejected for expert mode by the upstream) |
 | `X-Client-Platform` / `X-Client-Locale` / `X-Client-Timezone-Offset` | `web` / `zh_CN` / `28800` |
 | `x-client-bundle-id` | `com.deepseek.chat` |
-| `X-DS-PoW-Response` | **动态**：每次请求前求解，`base64(json PoW token)` |
+| `X-DS-PoW-Response` | **dynamic**: solved before each request, `base64(json PoW token)` |
 
-#### 客户端参数 → 上游字段映射链
+#### Client parameter → upstream field mapping chain
 
-**OpenAI `/v1/chat/completions`：**
+**OpenAI `/v1/chat/completions`:**
 
-| 客户端字段 | server 决策（优先级从高到低） | 上游字段 |
+| Client field | Server decision (highest to lowest priority) | Upstream field |
 |-----------|------------------------------|---------|
-| `model` | `MODEL_ROUTES` 命中 → 对应 model_type；否则 `MODE=expert` → `"expert"`；否则 `"default"` | `model_type` |
-| `thinking_mode` | `MODEL_ROUTES.thinking` → `THINKING=enabled/disabled` → 客户端 `thinking_mode` | `thinking_enabled` |
-| `search_enabled` | `MODEL_ROUTES.search` → `SEARCH=enabled/disabled` → 客户端 `search_enabled` | `search_enabled` |
-| `stream` | 直接 | `stream` |
-| `temperature` / `top_p` / `max_tokens` | **读取后丢弃**，不参与透传 | — |
-| `tools` / `tool_choice` | server 层转 DSML 注入 `prompt`（见第 8 章） | 不单独成字段 |
+| `model` | `MODEL_ROUTES` hit → its model_type; else `MODE=expert` → `"expert"`; else `"default"` | `model_type` |
+| `thinking_mode` | `MODEL_ROUTES.thinking` → `THINKING=enabled/disabled` → client `thinking_mode` | `thinking_enabled` |
+| `search_enabled` | `MODEL_ROUTES.search` → `SEARCH=enabled/disabled` → client `search_enabled` | `search_enabled` |
+| `stream` | direct | `stream` |
+| `temperature` / `top_p` / `max_tokens` | **read then discarded**, not passed through | — |
+| `tools` / `tool_choice` | server converts to DSML and injects into `prompt` (see chapter 8) | not a separate field |
 
-**Anthropic `/v1/messages`：**
+**Anthropic `/v1/messages`:**
 
-| 客户端字段 | server 决策 | 上游字段 |
+| Client field | Server decision | Upstream field |
 |-----------|------------|---------|
-| `model` | 同 OpenAI | `model_type` |
-| `thinking.type="enabled"` | 映射为 `thinking_mode` 再走同上链路 | `thinking_enabled` |
-| `metadata.user_id` | 会话缓存键（`SESSION_CACHE_TTL`） | `parent_message_id`（多轮） |
-| `system` / `messages` | `_build_prompt()` 拼接 | `prompt` |
-| `max_tokens` / `stop_sequences` / `temperature` | **忽略** | — |
+| `model` | same as OpenAI | `model_type` |
+| `thinking.type="enabled"` | mapped to `thinking_mode`, then the same chain | `thinking_enabled` |
+| `metadata.user_id` | session-cache key (`SESSION_CACHE_TTL`) | `parent_message_id` (multi-turn) |
+| `system` / `messages` | concatenated by `_build_prompt()` | `prompt` |
+| `max_tokens` / `stop_sequences` / `temperature` | **ignored** | — |
 
-#### 环境变量优先级总结（最高 → 最低）
+#### Environment-variable priority summary (highest → lowest)
 
 ```
-MODEL_ROUTES 命中（按 model 名）→ MODE / THINKING / SEARCH env → 客户端字段（thinking_mode / search_enabled）
+MODEL_ROUTES hit (by model name) → MODE / THINKING / SEARCH env → client fields (thinking_mode / search_enabled)
 ```
 
-`MODE`/`THINKING`/`SEARCH` 均为 `auto` 时，`model_type` 恒为 `"default"`、thinking/search 由客户端决定；`MODEL_ROUTES` 只影响匹配到的模型名，未匹配模型回退到 env 逻辑（见 7.12 协作表）。
+When `MODE`/`THINKING`/`SEARCH` are all `auto`, `model_type` is always `"default"` and thinking/search are client-decided; `MODEL_ROUTES` affects only matched model names, and unmatched models fall back to the env logic (see the 7.12 cooperation table).
 
 ---
 
 
 
-## 8. 工具调用 (DSML)
+## 8. Tool Calls (DSML)
 
-### 8.1 原理
+### 8.1 Principle
 
-DeepSeek Chat 的 API 原生不支持 tool calling（function calling）。本项目通过 **DSML（DeepSeek Markup Language）提示词注入** 方案实现。
+DeepSeek Chat's API does not natively support tool calling (function calling). This project implements it via **DSML (DeepSeek Markup Language) prompt injection**.
 
-核心思想：将工具定义转化为文本指令注入 system message，让模型理解指令后以 XML 格式回复，再解析回 OpenAI 标准格式。
+The core idea: turn tool definitions into text instructions injected into the system message, have the model understand them and reply in an XML format, then parse that back into the OpenAI standard format.
 
-### 8.2 流程
+### 8.2 Flow
 
 ```
-客户端发送 tools 数组
+Client sends the tools array
   │
   ▼
 server.py: build_dsml_tool_prompt(tools)
-  │  将工具定义转为 DSML 格式文本：
+  │  turn tool definitions into DSML-format text:
   │  "You have access to tools. When you need to call a tool,
   │   respond with EXACTLY this format — no markdown fences...
   │   Available tools:
-  │     get_weather: 获取指定城市的天气
-  │     search_web: 搜索网络信息"
+  │     get_weather: get the weather for a given city
+  │     search_web: search the web"
   │
-  ▼ 注入到 system message
-_build_prompt() 将 DSML 指令拼入 prompt 开头
+  ▼ inject into the system message
+_build_prompt() prepends the DSML instructions to the prompt
   │
   ▼
-DeepSeek 模型理解指令，可能以 DSML XML 回复：
-  ├─ 正常回复 ("北京今天25度")
-  └─ 工具调用 (<|DSML|tool_calls>...)
+The DeepSeek model understands the instructions and may reply with DSML XML:
+  ├─ normal reply ("Beijing is 25 degrees today")
+  └─ tool call (<|DSML|tool_calls>...)
         │
         ▼
-      流式: StreamSieve 实时检测 DSML 标签
-      非流式: parse_dsml_tool_calls() 全量解析
+      streaming: StreamSieve detects DSML tags in real time
+      non-streaming: parse_dsml_tool_calls() parses the whole thing
         │
         ▼
-      转为 OpenAI 标准 tool_calls 格式
+      convert to the OpenAI standard tool_calls format
 ```
 
-### 8.3 DSML XML 格式
+### 8.3 DSML XML format
 
 ```xml
 <|DSML|tool_calls>
   <|DSML|invoke name="get_weather">
-    <|DSML|parameter name="city"><![CDATA[北京]]></|DSML|parameter>
+    <|DSML|parameter name="city"><![CDATA[Beijing]]></|DSML|parameter>
   </|DSML|invoke>
 </|DSML|tool_calls>
 ```
 
-注意事项：
-- 每个 `parameter` 的 value 如果为字符串，必须使用 CDATA 包裹
-- 数值、布尔值、null 直接以文本形式写入
-- 不支持嵌套对象（使用 JSON.stringify 后以 CDATA 传递）
-- `invoke` 的 `name` 属性需要 XML 转义（`&` > `&amp;` 等）
+Notes:
+- If a `parameter` value is a string, it must be wrapped in CDATA.
+- Numbers, booleans, and null are written directly as text.
+- Nested objects are not supported (use JSON.stringify and pass via CDATA).
+- The `invoke` `name` attribute needs XML escaping (`&` → `&amp;`, etc.).
 
-### 8.4 DSML 解析 (`tool_dsml.py`)
+### 8.4 DSML parsing (`tool_dsml.py`)
 
-**`strip_dsml_markup(text)`** — 去除 `|DSML|` 前缀，保留纯 XML 结构。逐字符扫描，处理 CDATA 内容和 `|DSML|` 前缀标签。
+**`strip_dsml_markup(text)`** — removes the `|DSML|` prefix, keeping the pure XML structure. Scans character by character, handling CDATA content and `|DSML|`-prefixed tags.
 
-**`parse_dsml_tool_calls(text, tool_names)`** — 从文本中提取工具调用。
+**`parse_dsml_tool_calls(text, tool_names)`** — extracts tool calls from text.
 
-解析策略：
-1. 调用 `strip_dsml_markup()` 标准化文本
-2. 匹配 `<tool_calls>...</tool_calls>` 或 `<tool_call>...</tool_call>` 块
-3. 无外层 wrapper 时直接匹配裸 `<invoke>`
-4. 每个 invoke 内的 `<parameter>` 提取参数
-5. 参数值尝试 JSON.parse，失败后用 `_auto_type` 智能转换
+Parsing strategy:
+1. Call `strip_dsml_markup()` to normalize the text.
+2. Match `<tool_calls>...</tool_calls>` or `<tool_call>...</tool_call>` blocks.
+3. When there is no outer wrapper, match the bare `<invoke>` directly.
+4. Extract parameters from each `<parameter>` inside an invoke.
+5. Try JSON.parse on parameter values; on failure, use `_auto_type` for smart conversion.
 
-**`_auto_type(val)`** — 智能类型推断：
+**`_auto_type(val)`** — smart type inference:
 
-| 输入 | 输出 |
+| Input | Output |
 |------|------|
 | `"true"` | `True` (bool) |
 | `"false"` | `False` (bool) |
@@ -1204,32 +1204,32 @@ DeepSeek 模型理解指令，可能以 DSML XML 回复：
 | `"3.14"` | `3.14` (float) |
 | `"hello"` | `"hello"` (str) |
 
-**`format_tool_calls_for_prompt(tool_calls_raw)`** — 将 OpenAI tool_calls 转回 DSML 格式，用于历史消息回传。
+**`format_tool_calls_for_prompt(tool_calls_raw)`** — converts OpenAI tool_calls back to DSML format, used when replaying history messages.
 
-**`build_dsml_tool_prompt(tools)`** — 生成工具指令提示词。
+**`build_dsml_tool_prompt(tools)`** — generates the tool-instruction prompt.
 
-### 8.5 工具调用历史回传
+### 8.5 Replaying tool-call history
 
-多轮对话中，如果之前的 assistant 回复包含工具调用，需要在下一轮请求时将其转回 DSML 格式并拼入 prompt：
+In a multi-turn conversation, if a previous assistant reply contained tool calls, they must be converted back to DSML format and concatenated into the prompt on the next request:
 
 ```
-Assistant: 让我查一下天气。 format_tool_calls_for_prompt(...)
+Assistant: Let me check the weather. format_tool_calls_for_prompt(...)
 Tool result: {"temperature": 25}
-User: 那湿度呢？
+User: What about humidity?
 ```
 
-`_build_prompt()` 中处理 `assistant` 角色的 `tool_calls` 字段，通过 `format_tool_calls_for_prompt()` 转为 DSML 格式附加到消息文本后。
+`_build_prompt()` handles the `tool_calls` field of the `assistant` role, converting it to DSML via `format_tool_calls_for_prompt()` and appending it after the message text.
 
-### 8.6 已知限制
+### 8.6 Known limitations
 
-- **不支持并行工具调用**：每次只能调用一个工具
-- **`tool_choice` 不可靠**：模型可能选择不调用工具
-- **格式不稳定**：依赖模型按 DSML 格式精确输出，少标签或多空格都可能导致解析失败
-- **DSML 解析失败回退**：如果 DSML 解析失败，工具调用内容会被清理后作为普通文本返回
+- **No parallel tool calls**: only one tool can be called at a time.
+- **`tool_choice` unreliable**: the model may choose not to call a tool.
+- **Format instability**: it depends on the model emitting exactly the DSML format; a missing tag or extra spaces can break parsing.
+- **DSML parse-failure fallback**: if DSML parsing fails, the tool-call content is cleaned and returned as plain text.
 
-### 8.7 DSML 内部函数参考
+### 8.7 DSML internal-function reference
 
-#### `extract_cdata(text)` — CDATA 提取
+#### `extract_cdata(text)` — CDATA extraction
 
 ```python
 def extract_cdata(text: str) -> str:
@@ -1239,129 +1239,129 @@ def extract_cdata(text: str) -> str:
     return text
 ```
 
-从参数值文本中提取 CDATA 包裹的内容。如果文本不是 CDATA 格式，原样返回。
+Extracts CDATA-wrapped content from a parameter value. If the text is not CDATA format, returns it unchanged.
 
-#### `_auto_type(val)` — 智能类型推断
+#### `_auto_type(val)` — smart type inference
 
-用于将 DSML 参数中的字符串值转换为 Python 原生类型。转换优先级：
+Converts a DSML parameter's string value to a native Python type. Conversion priority:
 
-1. 布尔值：`"true"` → `True`，`"false"` → `False`
-2. Null：`"null"`, `"none"` → `None`
-3. 整数：`"42"` → `42`
-4. 浮点数：`"3.14"` → `3.14`
-5. 字符串：其他情况原样返回
+1. Boolean: `"true"` → `True`, `"false"` → `False`.
+2. Null: `"null"`, `"none"` → `None`.
+3. Integer: `"42"` → `42`.
+4. Float: `"3.14"` → `3.14`.
+5. String: otherwise returned unchanged.
 
-**注意：** 此函数在 CDATA 提取后调用。如果参数值已经以 JSON 格式传入（即 `json.loads` 成功），则优先使用 JSON 解析结果。`_auto_type` 仅在 JSON 解析失败时作为 fallback。
+**Note:** this function is called after CDATA extraction. If the parameter value was passed in as JSON (i.e. `json.loads` succeeds), the JSON result is preferred. `_auto_type` is only a fallback when JSON parsing fails.
 
-#### `_clean_dsml_text(text)` — 清理 DSML 标记
+#### `_clean_dsml_text(text)` — clean DSML markup
 
-从文本中去除所有 DSML 相关标记，返回纯净文本。执行以下清理：
+Removes all DSML-related markup from text, returning clean text. Performs the following cleanup:
 
-| 步骤 | 正则/操作 | 清理目标 |
+| Step | Regex/operation | Cleanup target |
 |------|----------|---------|
-| 1 | `<tool_calls>...</tool_calls>` | 工具调用外层包装 |
-| 2 | `<invoke ...>...</invoke>` | 单个工具调用 |
-| 3 | `<parameter ...>...</parameter>` | 参数声明 |
-| 4 | `<![CDATA[...]]>` | CDATA 标记 |
-| 5 | `[citation:N]` | DeepSeek 联网搜索引用标记 |
-| 6 | 3 个以上连续换行 → 2 个 | 空白行压缩 |
+| 1 | `<tool_calls>...</tool_calls>` | tool-call outer wrapper |
+| 2 | `<invoke ...>...</invoke>` | a single tool call |
+| 3 | `<parameter ...>...</parameter>` | parameter declarations |
+| 4 | `<![CDATA[...]]>` | CDATA markers |
+| 5 | `[citation:N]` | DeepSeek web-search reference markers |
+| 6 | 3+ consecutive newlines → 2 | blank-line compaction |
 
-**`[citation:N]` 引用标记：** 当 `search_enabled: true` 时，DeepSeek 可能在回复中插入引用标记如 `[citation:1]`。这些标记对用户无意义（无法跳转），故统一去除。
+**`[citation:N]` reference markers:** when `search_enabled: true`, DeepSeek may insert reference markers like `[citation:1]` in the reply. These are meaningless to the user (no link to follow), so they are stripped uniformly.
 
-#### `format_tool_calls_for_prompt()` — 工具调用历史回传
+#### `format_tool_calls_for_prompt()` — replaying tool-call history
 
-将 OpenAI 格式的 tool_calls 转回 DSML 格式，用于多轮对话。输入兼容以下格式：
+Converts OpenAI-format tool_calls back to DSML format for multi-turn conversations. The input is compatible with the following formats:
 
 ```json
-// 格式 A: OpenAI 标准
-{"id": "call_xxx", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\": \"北京\"}"}}
+// Format A: OpenAI standard
+{"id": "call_xxx", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\": \"Beijing\"}"}}
 
-// 格式 B: 简化格式
-{"name": "get_weather", "arguments": {"city": "北京"}}
+// Format B: simplified
+{"name": "get_weather", "arguments": {"city": "Beijing"}}
 
-// 格式 C: 原生格式
-{"name": "get_weather", "input": "{\"city\": \"北京\"}"}
+// Format C: native
+{"name": "get_weather", "input": "{\"city\": \"Beijing\"}"}
 ```
 
-输出：
+Output:
 ```xml
 <|DSML|tool_calls>
   <|DSML|invoke name="get_weather">
-    <|DSML|parameter name="city"><![CDATA[北京]]></|DSML|parameter>
+    <|DSML|parameter name="city"><![CDATA[Beijing]]></|DSML|parameter>
   </|DSML|invoke>
 </|DSML|tool_calls>
 ```
 
-#### 参数格式化细则
+#### Parameter-formatting rules
 
-`_format_params_dsml()` 处理不同 Python 类型的 DSML 序列化：
+`_format_params_dsml()` handles DSML serialization of different Python types:
 
-| Python 类型 | DSML 输出 | 示例 |
+| Python type | DSML output | Example |
 |------------|----------|------|
-| `None` | 空标签 | `<parameter name="x"></parameter>` |
-| `str` | CDATA 包裹 | `<parameter name="x"><![CDATA[hello]]></parameter>` |
-| `int/float/bool` | 纯文本 | `<parameter name="x">42</parameter>` |
-| `dict/list` | CDATA 包裹的 JSON | `<parameter name="x"><![CDATA[{"key":"value"}]]></parameter>` |
+| `None` | empty tag | `<parameter name="x"></parameter>` |
+| `str` | CDATA-wrapped | `<parameter name="x"><![CDATA[hello]]></parameter>` |
+| `int/float/bool` | plain text | `<parameter name="x">42</parameter>` |
+| `dict/list` | CDATA-wrapped JSON | `<parameter name="x"><![CDATA[{"key":"value"}]]></parameter>` |
 
-**修复（2026-05-07）：** 历史上 dict/list 类型参数会被序列化为空标签（`<parameter name="x"></parameter>`），导致嵌套参数丢失。修复后使用 `json.dumps()` 序列化为 JSON 字符串，再以 CDATA 包裹传递，保留了完整的嵌套结构。
+**Fix (2026-05-07):** historically dict/list parameters were serialized to an empty tag (`<parameter name="x"></parameter>`), losing nested parameters. The fix uses `json.dumps()` to serialize to a JSON string, then wraps it in CDATA, preserving the full nested structure.
 
 ---
 
 
 
-## 9. StreamSieve 流式筛分引擎
+## 9. StreamSieve Streaming Sieve Engine
 
-### 9.1 解决的问题
+### 9.1 Problem it solves
 
-流式模式下，DeepSeek 逐 token 返回文本。当工具调用发生时，DSML XML 标签与普通文本 token 交错传输。StreamSieve 需要在 token 级别实时检测并分离文本和工具调用标签。
+In streaming mode, DeepSeek returns text token by token. When a tool call happens, DSML XML tags and plain-text tokens are interleaved. StreamSieve must detect and separate text from tool-call tags in real time at the token level.
 
-### 9.2 双缓冲区设计
-
-```
-待处理缓冲区 (_pending)
-  │ 存储尚未被判定为工具调用的文本
-  │ 避免在标签边界处截断 token
-  ▼
-检测到 DSML 起始标记
-  │ (如 <|DSML|tool_calls>, <invoke, <tool_calls>)
-  ▼
-捕获缓冲区 (_capture_buf)
-  │ 从标记开始捕获所有后续 token
-  │ 持续到检测到闭合标签
-  ▼
-捕获完成 → parse_fn 解析 → SieveEvent 发出
-  │ type='tool_calls' 或 type='text'
-  ▼
-缓冲区和状态重置
-```
-
-### 9.3 核心方法
-
-**`feed(chunk)`** — 处理新 token：
+### 9.2 Dual-buffer design
 
 ```
-流程图:
-1. 如果当前处于 _capturing 状态:
-   a. 将 chunk 追加到 _capture_buf
-   b. 尝试 _try_finish_capture()
-   c. 完成则发出事件并重置，未完成继续等待
-   
-2. 如果不处于 _capturing 状态:
-   a. 将 chunk 追加到 _pending
-   b. 在 _pending 中搜索 _find_tool_start()
-   c. 找到标记:
-      - 标记前的文本作为 text 事件发出
-      - 剩余部分移入 _capture_buf
-      - 尝试 _try_finish_capture()
-   d. 未找到标记:
-      - _split_safe() 将安全部分发出，可能包含标记起始的尾部保留
+Pending buffer (_pending)
+  │ stores text not yet judged to be a tool call
+  │ avoids truncating a token at a tag boundary
+  ▼
+A DSML start marker is detected
+  │ (e.g. <|DSML|tool_calls>, <invoke, <tool_calls>)
+  ▼
+Capture buffer (_capture_buf)
+  │ captures all subsequent tokens from the marker
+  │ continues until a closing tag is detected
+  ▼
+Capture done → parse_fn parses → a SieveEvent is emitted
+  │ type='tool_calls' or type='text'
+  ▼
+Buffers and state are reset
 ```
 
-**`flush()`** — 流结束时处理残余缓冲区：
-- `_capture_buf` 中未闭合的工具调用 → 当普通文本发出
-- `_pending` 中残余文本 → 发出
+### 9.3 Core methods
 
-**`_find_tool_start(text)`** — 在文本中搜索 DSML 起始标记：
+**`feed(chunk)`** — process a new token:
+
+```
+flow:
+1. If currently in the _capturing state:
+   a. append chunk to _capture_buf
+   b. try _try_finish_capture()
+   c. if done, emit the event and reset; otherwise keep waiting
+
+2. If not in the _capturing state:
+   a. append chunk to _pending
+   b. search _pending with _find_tool_start()
+   c. marker found:
+      - text before the marker is emitted as a text event
+      - the remainder moves into _capture_buf
+      - try _try_finish_capture()
+   d. marker not found:
+      - _split_safe() emits the safe part, possibly keeping a trailing tail that could start a marker
+```
+
+**`flush()`** — handle residual buffers at the end of the stream:
+- an unclosed tool call in `_capture_buf` → emitted as plain text
+- residual text in `_pending` → emitted
+
+**`_find_tool_start(text)`** — search for a DSML start marker in text:
 
 ```python
 _TOOL_STARTS = [
@@ -1375,18 +1375,18 @@ _TOOL_STARTS = [
 ]
 ```
 
-同时检测前缀：`<|DSML|`、`|DSML|`、`<tool_calls`、`<tool_call`、`<invoke`
+It also detects prefixes: `<|DSML|`, `|DSML|`, `<tool_calls`, `<tool_call`, `<invoke`.
 
-**`_split_safe(text)`** — 切分文本，避免在可能的标记起始处截断：
+**`_split_safe(text)`** — split text, avoiding truncation at a possible marker start:
 
-从文本末尾一个最长标签长度的窗口内，找到**最早**的 `<` 或 `|`，只要从该位置起的尾部仍可能是任一 `_TOOL_STARTS` / `_TOOL_PREFIXES` 的前缀，就保留该尾部到 `_pending`，其余部分作为安全文本发出。（此前只看最后一个 `<` 或 `|`：标签被逐 token 流式输出时，`<|` 中最后一个特殊字符是 `|`，导致 `<` 被当作正文发出，客户端在每次流式工具调用前看到多余的 `<`。）
+Within a window of the longest tag length from the end of the text, find the **earliest** `<` or `|`; as long as the tail from that position could still be a prefix of any `_TOOL_STARTS` / `_TOOL_PREFIXES`, keep that tail in `_pending` and emit the rest as safe text. (Previously only the last `<` or `|` was considered: when a tag is streamed token by token, the last special char in `<|` is `|`, so `<` was emitted as body text, and the client saw an extra `<` before each streaming tool call.)
 
-**`_is_capture_complete()`** — 判断捕获是否完整：
+**`_is_capture_complete()`** — decide whether the capture is complete:
 
-- 如果 `_capture_buf` 包含 `<|DSML|tool_calls>` 或 `<tool_calls>` → 等待对应的闭合标签
-- 如果包含 `<invoke` 或 `<|DSML|invoke` → 等待 `</invoke>` 或 `</|DSML|invoke>`
+- if `_capture_buf` contains `<|DSML|tool_calls>` or `<tool_calls>` → wait for the matching closing tag
+- if it contains `<invoke` or `<|DSML|invoke` → wait for `</invoke>` or `</|DSML|invoke>`
 
-### 9.4 事件模型
+### 9.4 Event model
 
 ```python
 @dataclass
@@ -1395,63 +1395,63 @@ class SieveEvent:
     data: Any      # str (for text) | list[dict] (for tool_calls)
 ```
 
-### 9.5 流式 Fallback 机制
+### 9.5 Streaming fallback mechanism
 
-server.py 的 `_handle_stream` 中有两层防护：
+`_handle_stream` in server.py has two layers of protection:
 
-1. **主路径**：StreamSieve 实时筛分，检测到工具调用立即发出 tool_calls 事件并终止流
-2. **Flush 路径**：流结束时 `sieve.flush()` 处理残余
-3. **Fallback 路径**：如果 sieve 漏检（罕见情况），用 `full_buf`（完整缓冲区）重新调用 `parse_dsml_tool_calls()` 全量解析
+1. **Main path**: StreamSieve sieves in real time; on detecting a tool call it emits a tool_calls event immediately and ends the stream.
+2. **Flush path**: at the end of the stream, `sieve.flush()` handles residue.
+3. **Fallback path**: if the sieve misses detection (rare), re-run `parse_dsml_tool_calls()` over `full_buf` (the full buffer) to parse the whole thing.
 
 ```python
 if not had_tool and full_buf:
     tc_result, _ = parse_dsml_tool_calls(full_buf, tool_names)
     if tc_result:
-        # 发出工具调用事件
+        # emit a tool-call event
         ...
 ```
 
 ---
 
-## 10. OpenAI 兼容层
+## 10. OpenAI Compatibility Layer
 
-### 10.1 端点
+### 10.1 Endpoints
 
-| 端点 | 方法 | 功能 | server.py 处理函数 |
+| Endpoint | Method | Function | server.py handler |
 |------|------|------|-------------------|
-| `/health` | GET | 健康检查 | `health()` |
-| `/v1/models` | GET | 模型列表 | `list_models()` |
-| `/v1/chat/completions` | POST | 对话补全 | `chat_completions()` |
+| `/health` | GET | health check | `health()` |
+| `/v1/models` | GET | model list | `list_models()` |
+| `/v1/chat/completions` | POST | chat completion | `chat_completions()` |
 
-### 10.2 请求模型 (`ChatCompletionRequest`)
+### 10.2 Request model (`ChatCompletionRequest`)
 
 ```python
 class ChatCompletionRequest(BaseModel):
-    model: Optional[str] = MODEL_NAME        # 模型名，可自定义（不影响转发）
-    messages: list[ChatMessage]               # 消息列表
-    stream: Optional[bool] = False            # 是否流式
-    max_tokens: Optional[int] = None          # 当前被忽略（透传无效）
-    temperature: Optional[float] = None       # 当前被忽略
-    top_p: Optional[float] = None             # 当前被忽略
-    tools: Optional[list[ToolDef]] = None     # 工具定义
-    tool_choice: Optional[Union[str, dict]] = None  # 工具选择（不可靠）
-    thinking_mode: Optional[bool] = False     # 客户端请求的思考模式（被 MODE/THINKING env 覆盖）
-    search_enabled: Optional[bool] = False    # 联网搜索
+    model: Optional[str] = MODEL_NAME        # model name, customizable (does not affect forwarding)
+    messages: list[ChatMessage]               # message list
+    stream: Optional[bool] = False            # whether to stream
+    max_tokens: Optional[int] = None          # currently ignored (pass-through ineffective)
+    temperature: Optional[float] = None       # currently ignored
+    top_p: Optional[float] = None             # currently ignored
+    tools: Optional[list[ToolDef]] = None     # tool definitions
+    tool_choice: Optional[Union[str, dict]] = None  # tool selection (unreliable)
+    thinking_mode: Optional[bool] = False     # client-requested thinking mode (overridden by MODE/THINKING env)
+    search_enabled: Optional[bool] = False    # web search
 ```
 
-**`thinking_mode` 与 MODE/THINKING env 的关系：**
+**Relationship between `thinking_mode` and the MODE/THINKING env vars:**
 
 ```
-thinking_mode 只在 MODE=auto 且 THINKING=auto 时生效
+thinking_mode takes effect only when MODE=auto and THINKING=auto
   ↑
-客户端请求       → MODE=auto, THINKING=auto → thinking = req.thinking_mode
-               → MODE=expert               → model_type = "expert"（忽略客户端）
-               → THINKING=enabled          → thinking = True（忽略客户端）
+client request    → MODE=auto, THINKING=auto → thinking = req.thinking_mode
+                 → MODE=expert               → model_type = "expert" (client ignored)
+                 → THINKING=enabled          → thinking = True (client ignored)
 ```
 
-即：环境变量的优先级高于客户端传参。
+That is: environment variables take priority over client parameters.
 
-### 10.3 流式 SSE 格式
+### 10.3 Streaming SSE format
 
 ```json
 data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1234567890,"model":"deepseek-chat","choices":[{"index":0,"delta":{},"finish_reason":null}]}
@@ -1465,34 +1465,34 @@ data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1234567890
 data: [DONE]
 ```
 
-**必须包含 `finish_reason: "stop"` 结束帧。** 标准 OpenAI 兼容客户端依赖此字段判断流是否正常结束。缺少则客户端可能报告 `finish: "other"` 或 `finish: null`，导致响应处理异常。
+**The `finish_reason: "stop"` end frame must be included.** Standard OpenAI-compatible clients rely on it to judge whether the stream ended normally. Without it a client may report `finish: "other"` or `finish: null`, causing abnormal response handling.
 
-**开启思考时 (`thinking_mode=true`) 的 SSE 序列：**
+**SSE sequence when thinking is on (`thinking_mode=true`):**
 
 ```json
 data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":...,"model":"deepseek-chat","choices":[{"index":0,"delta":{},"finish_reason":null}]}
 
 data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":...,"model":"deepseek-chat","choices":[{"index":0,"delta":{"reasoning_content":""},"finish_reason":null}]}
 
-data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":...,"model":"deepseek-chat","choices":[{"index":0,"delta":{"reasoning_content":"思考过程..."},"finish_reason":null}]}
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":...,"model":"deepseek-chat","choices":[{"index":0,"delta":{"reasoning_content":"reasoning..."},"finish_reason":null}]}
 
-data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":...,"model":"deepseek-chat","choices":[{"index":0,"delta":{"content":"最终回答"},"finish_reason":null}]}
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":...,"model":"deepseek-chat","choices":[{"index":0,"delta":{"content":"final answer"},"finish_reason":null}]}
 
 data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":...,"model":"deepseek-chat","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
 
 data: [DONE]
 ```
 
-### 10.4 工具调用 SSE 格式（`_emit_tool_calls_chunks`）
+### 10.4 Tool-call SSE format (`_emit_tool_calls_chunks`)
 
 ```
-帧1: delta.tool_calls[0] = {id: "call_xxx", type: "function", function: {name: "get_weather", arguments: ""}}
-帧2: delta.tool_calls[0] = {function: {arguments: '{"city": "北京"}'}}
-结束帧: finish_reason = "tool_calls"
+frame 1: delta.tool_calls[0] = {id: "call_xxx", type: "function", function: {name: "get_weather", arguments: ""}}
+frame 2: delta.tool_calls[0] = {function: {arguments: '{"city": "Beijing"}'}}
+end frame: finish_reason = "tool_calls"
 data: [DONE]
 ```
 
-### 10.5 非流式响应格式
+### 10.5 Non-streaming response format
 
 ```json
 {
@@ -1504,7 +1504,7 @@ data: [DONE]
     "index": 0,
     "message": {
       "role": "assistant",
-      "content": "回复内容"
+      "content": "reply content"
     },
     "finish_reason": "stop"
   }],
@@ -1516,7 +1516,7 @@ data: [DONE]
 }
 ```
 
-工具调用时：
+With a tool call:
 ```json
 "message": {
   "role": "assistant",
@@ -1524,48 +1524,48 @@ data: [DONE]
   "tool_calls": [{
     "id": "call_xxx",
     "type": "function",
-    "function": {"name": "get_weather", "arguments": "{\"city\": \"北京\"}"}
+    "function": {"name": "get_weather", "arguments": "{\"city\": \"Beijing\"}"}
   }]
 },
 "finish_reason": "tool_calls"
 ```
 
-### 10.6 模型名称处理
+### 10.6 Model-name handling
 
-`MODEL_NAME` 通过 `.env` 配置，默认 `"deepseek-chat"`。可自定义为 `"gpt-4"`、`"deepseek-reasoner"` 等任意值，**不影响实际转发**，仅用于响应中的 model 字段。
+`MODEL_NAME` is configured via `.env`, default `"deepseek-chat"`. It can be set to any value such as `"gpt-4"` or `"deepseek-reasoner"`, which **does not affect actual forwarding** and is only used for the model field in the response.
 
 ---
 
-## 11. Anthropic 兼容层
+## 11. Anthropic Compatibility Layer
 
-### 11.1 概述
+### 11.1 Overview
 
-项目新增对 Anthropic Claude API 格式的支持，通过 `POST /v1/messages` 端点提供。
+The project adds support for the Anthropic Claude API format via the `POST /v1/messages` endpoint.
 
-**设计原则：** adapter 层完全不变。格式转换在独立模块 `anthropic_format.py` 中完成，与 OpenAI 逻辑隔离。
+**Design principle:** the adapter layer is unchanged. Format conversion is done in a separate module, `anthropic_format.py`, isolated from the OpenAI logic.
 
-### 11.2 端点
+### 11.2 Endpoint
 
-| 端点 | 方法 | 功能 |
+| Endpoint | Method | Function |
 |------|------|------|
-| `/v1/messages` | POST | Anthropic 格式对话补全 |
+| `/v1/messages` | POST | Anthropic-format chat completion |
 
-### 11.3 请求映射
+### 11.3 Request mapping
 
-| Anthropic 字段 | 映射方式 |
+| Anthropic field | Mapping |
 |---------------|---------|
-| `messages[].content` | 提取文本 → `build_anthropic_prompt()` 拼入 prompt |
-| `system` | 拼入 prompt 开头作为 System 前缀 |
-| `thinking.type` | 映射为 `thinking_mode`，受 THINKING env 覆盖 |
-| `tools` | 转为 DSML 工具提示词注入（复用 `build_dsml_tool_prompt()`） |
-| `max_tokens` | 忽略（DeepSeek 不支持） |
-| `metadata` | 忽略 |
-| `stop_sequences` | 忽略 |
-| `stream` | 控制流式/非流式路径 |
+| `messages[].content` | extract text → concatenate into the prompt via `build_anthropic_prompt()` |
+| `system` | prepended to the prompt as a System prefix |
+| `thinking.type` | mapped to `thinking_mode`, overridden by the THINKING env |
+| `tools` | converted to a DSML tool prompt and injected (reuses `build_dsml_tool_prompt()`) |
+| `max_tokens` | ignored (DeepSeek does not support it) |
+| `metadata` | ignored |
+| `stop_sequences` | ignored |
+| `stream` | controls the streaming/non-streaming path |
 
-### 11.4 流式 SSE 格式
+### 11.4 Streaming SSE format
 
-Anthropic 使用独立的事件类型：
+Anthropic uses its own event types:
 
 ```
 event: message_start
@@ -1575,7 +1575,7 @@ event: content_block_start
 data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
 
 event: content_block_delta
-data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"推理过程..."}}
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"reasoning..."}}
 
 event: content_block_stop
 data: {"type":"content_block_stop","index":0}
@@ -1584,7 +1584,7 @@ event: content_block_start
 data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
 
 event: content_block_delta
-data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"最终回答"}}
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"final answer"}}
 
 event: content_block_stop
 data: {"type":"content_block_stop","index":1}
@@ -1596,7 +1596,7 @@ event: message_stop
 data: {"type":"message_stop"}
 ```
 
-工具调用时：
+With a tool call:
 ```
 content_block_start(index, type="tool_use", id="toolu_...", name="get_weather", input={})
 content_block_delta(index, type="input_json_delta", partial_json="...")
@@ -1604,9 +1604,9 @@ content_block_stop(index)
 message_delta → stop_reason: "tool_use"
 ```
 
-### 11.5 非流式响应
+### 11.5 Non-streaming response
 
-Anthropic 格式使用 `content` 数组替代 OpenAI 的单一 `content` 字符串：
+The Anthropic format uses a `content` array instead of OpenAI's single `content` string:
 
 ```json
 {
@@ -1614,7 +1614,7 @@ Anthropic 格式使用 `content` 数组替代 OpenAI 的单一 `content` 字符�
   "type": "message",
   "role": "assistant",
   "content": [
-    {"type": "text", "text": "回答内容"}
+    {"type": "text", "text": "answer content"}
   ],
   "model": "deepseek-chat",
   "stop_reason": "end_turn",
@@ -1623,25 +1623,25 @@ Anthropic 格式使用 `content` 数组替代 OpenAI 的单一 `content` 字符�
 }
 ```
 
-有工具调用时：
+With a tool call:
 ```json
 "content": [
-  {"type": "tool_use", "id": "toolu_xxx", "name": "get_weather", "input": {"city": "北京"}}
+  {"type": "tool_use", "id": "toolu_xxx", "name": "get_weather", "input": {"city": "Beijing"}}
 ],
 "stop_reason": "tool_use"
 ```
 
-有 thinking 时（仅流式场景，非流式 adapter.chat() 不返回 thinking）：
+With thinking (streaming only; non-streaming adapter.chat() does not return thinking):
 ```json
 "content": [
-  {"type": "thinking", "thinking": "推理过程..."},
-  {"type": "text", "text": "回答内容"}
+  {"type": "thinking", "thinking": "reasoning..."},
+  {"type": "text", "text": "answer content"}
 ]
 ```
 
-### 11.6 工具调用映射
+### 11.6 Tool-call mapping
 
-Anthropic 使用 `tool_use`/`tool_result` content block 类型，与 OpenAI 的 `tool_calls`/`tool` role 对应：
+Anthropic uses `tool_use`/`tool_result` content-block types, corresponding to OpenAI's `tool_calls`/`tool` role:
 
 | OpenAI | Anthropic |
 |--------|-----------|
@@ -1650,88 +1650,88 @@ Anthropic 使用 `tool_use`/`tool_result` content block 类型，与 OpenAI 的 
 | `tool_calls[].id` | `tool_use.id` (prefix: `toolu_`) |
 | `role: "tool"` + `tool_call_id` | `role: "user"` + `tool_result` block |
 
-`build_anthropic_prompt()` 将多轮对话中的 `tool_use` 块转为 DSML 格式 + `tool_result` 块转为 `Tool result:` 前缀。
+`build_anthropic_prompt()` converts `tool_use` blocks in multi-turn conversations to DSML format and `tool_result` blocks to a `Tool result:` prefix.
 
-### 11.7 关键实现
+### 11.7 Key implementation
 
-`anthropic_format.py` 的核心函数：
+Core functions of `anthropic_format.py`:
 
-| 函数 | 职责 |
+| Function | Responsibility |
 |------|------|
-| `build_anthropic_prompt()` | Anthropic messages → 内部 prompt 文本 |
-| `build_nonstream_response()` | token 流 → Anthropic 非流式 JSON |
-| `stream_response()` | token 流 → Anthropic SSE 事件生成器 |
+| `build_anthropic_prompt()` | Anthropic messages → internal prompt text |
+| `build_nonstream_response()` | token stream → Anthropic non-streaming JSON |
+| `stream_response()` | token stream → Anthropic SSE event generator |
 | `_dsml_toolcalls_to_anthropic()` | OpenAI tool_calls → Anthropic tool_use blocks |
-| `_emit_tool_use_blocks()` | tool_use → SSE content_block_start/delta/stop 事件 |
+| `_emit_tool_use_blocks()` | tool_use → SSE content_block_start/delta/stop events |
 
-### 11.8 MODE/THINKING/SEARCH 交互
+### 11.8 MODE/THINKING/SEARCH interaction
 
-与 OpenAI 端点共享 MODE/THINKING/SEARCH 环境变量：
+Shares the MODE/THINKING/SEARCH env vars with the OpenAI endpoint:
 
 ```
-THINKING=enabled  → 强制 thinking=true（无视请求中 thinking 参数）
-THINKING=disabled → 强制 thinking=false
-THINKING=auto     → thinking = (请求中 thinking.type == "enabled")
+THINKING=enabled  → force thinking=true (ignores the thinking param in the request)
+THINKING=disabled → force thinking=false
+THINKING=auto     → thinking = (request's thinking.type == "enabled")
 ```
 
 ---
 
-## 12. 多轮对话与消息组装
+## 12. Multi-turn Conversations and Message Assembly
 
 ### 11.1 `_build_prompt()`
 
-将 OpenAI messages 数组转为 DeepSeek 纯文本格式：
+Converts the OpenAI messages array into DeepSeek's plain-text format:
 
 ```
-System: 你是一个有帮助的助手。\n\n工具指令...
-User: 北京天气怎么样？
-Assistant: 让我查一下。<|DSML|tool_calls>...
+System: You are a helpful assistant.\n\ntool instructions...
+User: What's the weather in Beijing?
+Assistant: Let me check. <|DSML|tool_calls>...
 Tool result: {"temperature": 25}
-User: 那湿度呢？
+User: What about humidity?
 ```
 
-### 11.2 角色映射
+### 11.2 Role mapping
 
-| OpenAI role | Prompt 前缀 | 处理逻辑 |
+| OpenAI role | Prompt prefix | Handling |
 |-------------|------------|---------|
-| `system` | `System: ` | 直接拼接，如有 tools 则附加 DSML 指令 |
-| `user` | `User: ` | 提取 content 文本 |
-| `assistant` | `Assistant: ` | 文本 + tool_calls（转 DSML） |
-| `tool` | `Tool result: ` | 截断前 1000 字符 |
+| `system` | `System: ` | concatenated directly; if tools present, append DSML instructions |
+| `user` | `User: ` | extract content text |
+| `assistant` | `Assistant: ` | text + tool_calls (converted to DSML) |
+| `tool` | `Tool result: ` | truncated to the first 1000 chars |
 
-### 11.3 system message 的工具注入
+### 11.3 Tool injection into the system message
 
-当请求包含 `tools` 时，`build_dsml_tool_prompt()` 生成的指令会 **注入到 system message 末尾**。如果有多个 system message，指令会被拼接到第一个 system message 中。如果没有 system message，会创建一个新的 system 前缀。
+When the request includes `tools`, the instructions generated by `build_dsml_tool_prompt()` are **injected at the end of the system message**. If there are multiple system messages, the instructions are concatenated into the first one. If there is no system message, a new system prefix is created.
 
 ---
 
-## 13. ContentPart 支持
+## 13. ContentPart Support
 
-### 12.1 解决的问题
+### 12.1 Problem it solves
 
-OpenAI 的 `content` 字段支持两种格式：
+OpenAI's `content` field supports two formats:
 
 ```json
-// 格式 A: 纯字符串
-{"role": "user", "content": "你好"}
+// Format A: plain string
+{"role": "user", "content": "Hello"}
 
-// 格式 B: ContentPart 数组
-{"role": "user", "content": [{"type": "text", "text": "你好"}]}
+// Format B: ContentPart array
+{"role": "user", "content": [{"type": "text", "text": "Hello"}]}
 ```
 
-`_extract_text()` 统一处理：
+`_extract_text()` handles both uniformly:
 
 ```python
 def _extract_text(content) -> str:
     if content is None:    return ""
     if isinstance(content, str):  return content
-    # list[ContentPart] 格式
+    # list[ContentPart] format
     return " ".join(p.text for p in content if p.type == "text" and p.text)
 ```
 
-当前只支持 `type: "text"` 的 ContentPart。不支持图片、文件等多模态内容（DeepSeek Chat 网页版本身不支持）。
+Currently only `type: "text"` ContentParts are supported. Images, files, and other multimodal content are not supported (the DeepSeek Chat web app itself does not support them).
 
-### 12.2 Pydantic 模型
+### 12.2 Pydantic model
 
 ```python
 class ContentPart(BaseModel):
@@ -1741,102 +1741,102 @@ class ContentPart(BaseModel):
 
 ---
 
-## 14. 配置系统
+## 14. Configuration System
 
-### 13.1 环境变量
+### 13.1 Environment variables
 
-| 变量 | 默认值 | 说明 |
+| Variable | Default | Notes |
 |------|--------|------|
-| `MODEL_NAME` | `deepseek-chat` | 响应中的模型名（不影响实际转发） |
-| `PORT` | `8080` | 服务器监听端口 |
-| `MODE` | `auto` | 模式控制：`auto`/`quick`/`expert` |
-| `THINKING` | `auto` | 思考控制：`auto`/`enabled`/`disabled` |
-| `SEARCH` | `auto` | 联网搜索控制：`auto`/`enabled`/`disabled` |
-| `DEEPSEEK_JITTER_SECS` | `0.4`（v3.2.2+） | 上游调用前随机 sleep（0~N 秒），降低触发上游限流概率；`0` 禁用 |
-| `DEEPSEEK_RATE_LIMIT_RETRY_DELAYS` | `5,15`（v3.2.2+） | 上游限流（`rate_limit_reached`）时的退避秒数列表，每项重试一次并换新会话；空则禁重试 |
-| `DEEPSEEK_MAX_CONCURRENCY` | `2`（v3.2.4+） | 全局上游并发上限（跨账号），超出排队等待；编码 agent 并行子任务不会并发轰炸上游 |
+| `MODEL_NAME` | `deepseek-chat` | model name in responses (does not affect forwarding) |
+| `PORT` | `8080` | server listen port |
+| `MODE` | `auto` | mode control: `auto`/`quick`/`expert` |
+| `THINKING` | `auto` | thinking control: `auto`/`enabled`/`disabled` |
+| `SEARCH` | `auto` | web-search control: `auto`/`enabled`/`disabled` |
+| `DEEPSEEK_JITTER_SECS` | `0.4` (v3.2.2+) | random sleep (0~N s) before an upstream call, to reduce the chance of tripping rate limiting; `0` disables |
+| `DEEPSEEK_RATE_LIMIT_RETRY_DELAYS` | `5,15` (v3.2.2+) | backoff-second list on upstream rate limit (`rate_limit_reached`), each entry retries once with a new session; empty disables retries |
+| `DEEPSEEK_MAX_CONCURRENCY` | `2` (v3.2.4+) | global upstream concurrency cap (across accounts); extra requests queue; coding-agent parallel subtasks do not flood the upstream |
 
-> 其余可选变量见下表（`.env.example` 有完整注释，此处是给 Agent/自动化配置的速查）：
+> Other optional variables are in the table below (`.env.example` has full comments; this is a quick reference for agents/automation):
 
-| 变量 | 默认值 | 用途 | 非交互关键度 |
+| Variable | Default | Purpose | Non-interactive importance |
 |------|--------|------|------|
-| 客户端 API Key | — | WebUI「设置」页创建和撤销；哈希存入 `data/api_keys.sqlite3` | ⭐必配(公网) |
-| `ALLOW_UNAUTHENTICATED_API` | `false` | 是否允许 /v1/* 无鉴权 | 仅本地开发 |
-| `HOST` | `127.0.0.1` | 监听地址；`0.0.0.0`+默认密码拒绝启动 | ⭐反代需关注 |
-| `PORT` | `8080` | 监听端口 | |
-| `MODEL_NAME` | `deepseek-chat` | /v1/models 显示名（不影响实际模型） | |
-| `MODEL_ROUTES` | `""` | JSON 路由表，按 model 字段切 quick/expert | ⭐多模型路由 |
-| `MODE` / `THINKING` / `SEARCH` | `auto` | 行为三独立维度 | ⭐强制模式 |
-| `ACCOUNT_STORE_PATH` | `data/accounts.json` | 账号池持久化文件路径 | ⭐非交互账号池 |
-| `DEEPSEEK_ENCRYPTION_KEY` | `""` | Fernet key，accounts.json 加密(v2) | ⭐公网安全 |
-| `CLIENT_RPM_PER_KEY` | `60` | 每 key 每分钟请求数(0=不限) | ⭐限流 |
-| `CLIENT_RPM_PER_IP` | `120` | 每 IP 每分钟请求数(0=不限) | ⭐限流 |
-| `ENABLE_RATE_LIMIT` | `true` | 限流总开关 | |
-| `SESSION_CACHE_TTL` | `1800` | 多轮会话缓存秒数，0=禁多轮 | ⭐多轮 |
-| `DEEPSEEK_IMPERSONATE` | `chrome131` | curl_cffi TLS 指纹 profile | |
-| `DEEPSEEK_JITTER_SECS` | `0.4` | 调用前随机 sleep 秒数 | |
-| `DEEPSEEK_RATE_LIMIT_RETRY_DELAYS` | `5,15` | 上游限流退避秒数列，空=禁重试 | |
+| Client API key | — | created/revoked on the WebUI "Settings" page; hash stored in `data/api_keys.sqlite3` | ⭐required (public) |
+| `ALLOW_UNAUTHENTICATED_API` | `false` | whether to allow unauthenticated /v1/* | local dev only |
+| `HOST` | `127.0.0.1` | listen address; `0.0.0.0`+default password refuses to start | ⭐relevant behind a proxy |
+| `PORT` | `8080` | listen port | |
+| `MODEL_NAME` | `deepseek-chat` | /v1/models display name (does not affect the actual model) | |
+| `MODEL_ROUTES` | `""` | JSON route table, switch quick/expert by the model field | ⭐multi-model routing |
+| `MODE` / `THINKING` / `SEARCH` | `auto` | three independent behavior dimensions | ⭐forced mode |
+| `ACCOUNT_STORE_PATH` | `data/accounts.json` | account-pool persistence file path | ⭐non-interactive pool |
+| `DEEPSEEK_ENCRYPTION_KEY` | `""` | Fernet key, encrypts accounts.json (v2) | ⭐public security |
+| `CLIENT_RPM_PER_KEY` | `60` | requests per minute per key (0=unlimited) | ⭐rate limiting |
+| `CLIENT_RPM_PER_IP` | `120` | requests per minute per IP (0=unlimited) | ⭐rate limiting |
+| `ENABLE_RATE_LIMIT` | `true` | master rate-limit switch | |
+| `SESSION_CACHE_TTL` | `1800` | multi-turn session cache seconds, 0=disable multi-turn | ⭐multi-turn |
+| `DEEPSEEK_IMPERSONATE` | `chrome131` | curl_cffi TLS fingerprint profile | |
+| `DEEPSEEK_JITTER_SECS` | `0.4` | random sleep seconds before a call | |
+| `DEEPSEEK_RATE_LIMIT_RETRY_DELAYS` | `5,15` | upstream rate-limit backoff second list, empty=disable retries | |
 | `LOG_LEVEL` | `INFO` | DEBUG/INFO/WARNING/ERROR | |
-| `LOG_FORMAT` | `json` | json(生产)/text(开发) | |
-| `ALLOWED_ORIGINS` | `""` | CORS 允许 origin，逗号分隔 | 浏览器客户端 |
-| `ALLOW_CORS_CREDENTIALS` | `false` | 带凭证跨域 | |
-| `TRUSTED_PROXIES` | `""` | 信任代理 IP/CIDR，设后才采纳 XFF | ⭐反代 |
-| `ALLOW_INSECURE_PUBLIC_DEFAULTS` | `false` | 公网+默认密码的显式确认(不建议) | |
-| `DISABLE_AUTO_RECOVER` | `false` | 禁用账号自动恢复 | |
+| `LOG_FORMAT` | `json` | json (production)/text (development) | |
+| `ALLOWED_ORIGINS` | `""` | CORS allowed origins, comma-separated | browser clients |
+| `ALLOW_CORS_CREDENTIALS` | `false` | credentialed cross-origin | |
+| `TRUSTED_PROXIES` | `""` | trusted proxy IP/CIDR; XFF honored only when set | ⭐reverse proxy |
+| `ALLOW_INSECURE_PUBLIC_DEFAULTS` | `false` | explicit confirmation of public + default password (not recommended) | |
+| `DISABLE_AUTO_RECOVER` | `false` | disable account auto-recovery | |
 
-**给自动化/代理工具的配置 checklist（按顺序）：**
-1. 在 WebUI「设置」页创建客户端 API Key（否则 `/v1/*` 报 503）→ Bearer/x-api-key 鉴权；旧版 `API_KEYS` / `DEEPSEEK_API_KEY` 仅首次初始化时导入
-2. 账号池：通过 WebUI 添加账号，或写入 `data/accounts.json`；`.env` 不配置账号凭证
-3. 公网→`HOST=127.0.0.1`+反代+`TRUSTED_PROXIES`；或 `HOST=0.0.0.0`+自己上 TLS/WAF
-4. 限流默认够用；多 worker(gunicorn -w N) 实际限流=N×配置值
-5. 改 `.env` 必须**重启进程**才生效（load_dotenv 只在模块加载时调用一次）
+**Configuration checklist for automation/proxy tools (in order):**
+1. Create a client API key on the WebUI "Settings" page (otherwise `/v1/*` returns 503) → Bearer/x-api-key auth; legacy `API_KEYS` / `DEEPSEEK_API_KEY` are imported only on first initialization.
+2. Account pool: add accounts via the WebUI, or write `data/accounts.json`; `.env` does not configure account credentials.
+3. Public → `HOST=127.0.0.1` + reverse proxy + `TRUSTED_PROXIES`; or `HOST=0.0.0.0` + your own TLS/WAF.
+4. The rate-limit defaults are fine; with multiple workers (gunicorn -w N) the effective limit = N × the configured value.
+5. Changing `.env` requires **restarting the process** to take effect (load_dotenv is called only once at module load).
 
 
-#### MODE 详细说明
+#### MODE details
 
-| 值 | 效果 | model_type |
+| Value | Effect | model_type |
 |----|------|-----------|
-| `auto` | 不强制，使用客户端默认行为 | `"default"`（快速模式） |
-| `quick` | 强制快速模式 | `"default"` |
-| `expert` | 强制专家模式 | `"expert"` |
+| `auto` | no forcing, uses client default behavior | `"default"` (quick mode) |
+| `quick` | force quick mode | `"default"` |
+| `expert` | force expert mode | `"expert"` |
 
-#### THINKING 详细说明
+#### THINKING details
 
-| 值 | 效果 | thinking_enabled |
+| Value | Effect | thinking_enabled |
 |----|------|-----------------|
-| `auto` | 由客户端 request 中的 `thinking_mode` 决定 | `req.thinking_mode or False` |
-| `enabled` | 强制开启思考 | `True` |
-| `disabled` | 强制关闭思考 | `False` |
+| `auto` | decided by the request's `thinking_mode` | `req.thinking_mode or False` |
+| `enabled` | force thinking on | `True` |
+| `disabled` | force thinking off | `False` |
 
-#### SEARCH 详细说明
+#### SEARCH details
 
-| 值 | 效果 | search_enabled |
+| Value | Effect | search_enabled |
 |----|------|---------------|
-| `auto` | 由客户端 request 中的 `search_enabled` 决定 | `req.search_enabled or False` |
-| `enabled` | 强制开启联网搜索 | `True` |
-| `disabled` | 强制关闭联网搜索 | `False` |
+| `auto` | decided by the request's `search_enabled` | `req.search_enabled or False` |
+| `enabled` | force web search on | `True` |
+| `disabled` | force web search off | `False` |
 
-**重要：** 三个参数完全独立。`MODE=auto` 不等于"旧版 auto"——旧版中 `thinking_mode=true` 会同时设置 `model_type="expert"`。新版中每个维度由对应的环境变量独立控制。
+**Important:** the three parameters are fully independent. `MODE=auto` is not the "old auto" — in the old version `thinking_mode=true` also set `model_type="expert"`. In the new version each dimension is controlled independently by its env var.
 
-#### MODE / THINKING / SEARCH 交互矩阵
+#### MODE / THINKING / SEARCH interaction matrix
 
-| MODE | THINKING | SEARCH | 实际行为 |
+| MODE | THINKING | SEARCH | Actual behavior |
 |------|----------|--------|---------|
-| `auto` | `auto` | `auto` | model_type="default", thinking=客户端, search=客户端 |
-| `auto` | `enabled` | `auto` | model_type="default", thinking=true, search=客户端 |
-| `auto` | `disabled` | `auto` | model_type="default", thinking=false, search=客户端 |
-| `quick` | `auto` | `auto` | model_type="default", thinking=客户端, search=客户端 |
-| `quick` | `enabled` | `auto` | model_type="default", thinking=true, search=客户端 |
+| `auto` | `auto` | `auto` | model_type="default", thinking=client, search=client |
+| `auto` | `enabled` | `auto` | model_type="default", thinking=true, search=client |
+| `auto` | `disabled` | `auto` | model_type="default", thinking=false, search=client |
+| `quick` | `auto` | `auto` | model_type="default", thinking=client, search=client |
+| `quick` | `enabled` | `auto` | model_type="default", thinking=true, search=client |
 | `quick` | `disabled` | `disabled` | model_type="default", thinking=false, search=false |
-| `expert` | `auto` | `auto` | model_type="expert", thinking=客户端, search=客户端 |
+| `expert` | `auto` | `auto` | model_type="expert", thinking=client, search=client |
 | `expert` | `enabled` | `enabled` | model_type="expert", thinking=true, search=true |
-| `expert` | `disabled` | `auto` | model_type="expert", thinking=false, search=客户端 |
+| `expert` | `disabled` | `auto` | model_type="expert", thinking=false, search=client |
 
-所有 9 种组合均有效，`auto` 表示由客户端请求中的对应字段决定。
+All 9 combinations are valid; `auto` means decided by the corresponding field in the client request.
 
-修改 `.env` 后需要**重启服务器**才能生效（`load_dotenv()` 只在模块加载时调用一次）。
+After changing `.env` you must **restart the server** for it to take effect (`load_dotenv()` is called only once at module load).
 
-### 13.2 加载方式
+### 13.2 Loading
 
 ```python
 from dotenv import load_dotenv
@@ -1845,29 +1845,29 @@ load_dotenv()
 MODEL_NAME = os.environ.get("MODEL_NAME", "deepseek-chat")
 ```
 
-账号凭证由 `AccountPool` 从 `data/accounts.json` 加载，或通过 WebUI 管理；`adapter.py` 构造时必须显式传入凭证。`adapter.py` 和 `server.py` 仍调用 `load_dotenv()` 读取其他运行配置。
+Account credentials are loaded by `AccountPool` from `data/accounts.json`, or managed via the WebUI; `adapter.py` must be given credentials explicitly at construction. `adapter.py` and `server.py` still call `load_dotenv()` to read other runtime config.
 
-### 13.3 Token 和 Cookie 获取
+### 13.3 Getting the Token and Cookie
 
-1. 打开 https://chat.deepseek.com 并登录
-2. F12 → Network → 任意请求
-3. 从 Request Headers 复制：
+1. Open https://chat.deepseek.com and log in.
+2. F12 → Network → any request.
+3. Copy from the Request Headers:
    - `Authorization: Bearer <token>` → token
-   - `Cookie: <完整cookie>` → cookies
+   - `Cookie: <full cookie>` → cookies
 
-Token 和 Cookie 会过期，需定期更新。过期特征：PoW challenge 请求返回 `{"code":40003,"msg":"Authorization Failed (invalid token)"}`。
+The Token and Cookie expire and must be refreshed periodically. Expiry signature: the PoW-challenge request returns `{"code":40003,"msg":"Authorization Failed (invalid token)"}`.
 
-### 13.4 WASM 二进制来源
+### 13.4 WASM binary source
 
-`sha3_wasm_bg.wasm` 从 DeepSeek 前端中提取：
+`sha3_wasm_bg.wasm` is extracted from DeepSeek's frontend:
 
-1. 打开 https://chat.deepseek.com 并登录
-2. F12 → Sources → 搜索 `sha3_wasm_bg.wasm`
-3. 在 "Network" 标签中找到该文件并下载
-4. 或者直接在 JS 中定位：前端通过 `wasm_bindgen` 加载 `sha3_wasm_bg.wasm`，通常与 `sha3_wasm.js` 配套
-5. 将下载的 `.wasm` 文件覆盖项目根目录的同名文件
+1. Open https://chat.deepseek.com and log in.
+2. F12 → Sources → search `sha3_wasm_bg.wasm`.
+3. Find the file in the "Network" tab and download it.
+4. Or locate it directly in JS: the frontend loads `sha3_wasm_bg.wasm` via `wasm_bindgen`, usually paired with `sha3_wasm.js`.
+5. Overwrite the file of the same name in the project root with the downloaded `.wasm`.
 
-验证方法：
+Verification:
 ```python
 from wasmtime import Store, Module
 with open("sha3_wasm_bg.wasm", "rb") as f:
@@ -1875,131 +1875,131 @@ with open("sha3_wasm_bg.wasm", "rb") as f:
 print("WASM valid")
 ```
 
-**风险提示：**
-- DeepSeek 可能在任何前端更新中更换 WASM 二进制
-- 更新 WASM 后需检查导出函数名是否变化
-- 如果 `wasm_solve` 等导出函数不可用，需要同步更新 `_WASMSolver` 类
+**Risk notes:**
+- DeepSeek may swap the WASM binary in any frontend update.
+- After updating the WASM, check whether the exported function names changed.
+- If `wasm_solve` and other exports are unavailable, update the `_WASMSolver` class accordingly.
 
-### 13.5 httpx 客户端配置
+### 13.5 httpx client config
 
 ```python
 self._client = httpx.Client(timeout=120)
 ```
 
-| 配置项 | 值 | 说明 |
+| Config | Value | Notes |
 |--------|------|------|
-| `timeout` | 120s | 含连接、读取、写入总超时 |
-| 连接池 | 默认 (10) | httpx 默认连接池限制 |
-| Keep-Alive | 默认启用 | 复用 HTTP 连接 |
+| `timeout` | 120s | total connect + read + write timeout |
+| Connection pool | default (10) | httpx default pool limit |
+| Keep-Alive | enabled by default | reuse HTTP connections |
 
-**120s 超时的选择理由：**
-- 专家模式 THINK 阶段可能持续 30-60s，需要足够等待时间
-- DeepSeek 服务端在长时间思考期间不会发送数据，短超时会误断连
-- 网页版实际超时约 180s，120s 是保守值
-- `timeout=120` 是所有子超时的总上限（connect/read/write/pool）
+**Reason for the 120s timeout:**
+- The expert-mode THINK phase can last 30-60s and needs enough waiting time.
+- The DeepSeek server sends no data during long thinking, and a short timeout would misfire a disconnect.
+- The web app's actual timeout is about 180s; 120s is a conservative value.
+- `timeout=120` is the overall cap for all sub-timeouts (connect/read/write/pool).
 
-如果使用短超时（如默认的 5s），专家模式会在 thinking 阶段频繁断连，表现为 `Server disconnected without sending a response`。
+With a short timeout (like the default 5s), expert mode would frequently disconnect during the thinking phase, showing up as `Server disconnected without sending a response`.
 
-### 13.6 端口管理与进程控制
+### 13.6 Port management and process control
 
-`start.bat` 的端口管理逻辑（结合 `PORT` 环境变量）：
+`start.bat`'s port-management logic (combined with the `PORT` env var):
 
 ```batch
-:: 使用 PORT 环境变量（默认 8080）
+:: use the PORT env var (default 8080)
 if "%PORT%"=="" set PORT=8080
 
-:: 查找配置端口的 LISTENING 进程
+:: find the LISTENING process on the configured port
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%PORT% " ^| findstr LISTENING') do (
     taskkill /F /PID %%a
 )
 ```
 
-**工作原理：**
-1. 检查 `PORT` 环境变量，如果未设置则默认为 8080
-2. `netstat -ano` 列出所有连接及对应 PID
-3. `findstr ":%PORT% "` 过滤包含配置端口号的行
-4. `findstr LISTENING` 只保留 LISTENING 状态
-5. `tokens=5` 提取第 5 列（PID）
-6. `taskkill /F /PID` 强制终止
+**How it works:**
+1. Check the `PORT` env var, defaulting to 8080 if unset.
+2. `netstat -ano` lists all connections and their PIDs.
+3. `findstr ":%PORT% "` filters lines containing the configured port number.
+4. `findstr LISTENING` keeps only the LISTENING state.
+5. `tokens=5` extracts the 5th column (PID).
+6. `taskkill /F /PID` force-terminates.
 
-**手动排查：**
+**Manual troubleshooting:**
 ```bash
-# 查看配置端口占用
+# check the configured port
 netstat -ano | findstr ":%PORT%"
 
-# 强制终止指定 PID
+# force-terminate a given PID
 taskkill /F /PID <pid>
 ```
 
-**`__pycache__` 注意事项：** 如果更新代码后启动旧行为，可能是 Python 缓存了旧字节码：
+**`__pycache__` note:** if old behavior appears after a code update, Python may be caching old bytecode:
 ```bash
-# 清理所有 __pycache__
+# clean all __pycache__
 for /d /r . %d in (__pycache__) do @if exist "%d" rd /s /q "%d"
 ```
-建议将清理命令加入 `start.bat` 或开发工作流中。
+Consider adding the cleanup command to `start.bat` or your dev workflow.
 
 ---
 
-## 15. 账号池 (AccountPool)
+## 15. Account Pool (AccountPool)
 
-### 18.1 设计目标
+### 18.1 Design goals
 
-支持多 DeepSeek 账号轮询使用，解决单账号被限流/封禁时的 failover 问题。`AccountPool` 管理账号的完整生命周期：添加、分配、释放、错误标记和健康检查。
+Support round-robin use of multiple DeepSeek accounts, solving failover when a single account is rate-limited/banned. `AccountPool` manages an account's full lifecycle: add, allocate, release, error-mark, and health check.
 
-### 18.2 核心数据结构
+### 18.2 Core data structure
 
 ```python
 @dataclass
 class Account:
     token: str            # DeepSeek Bearer Token
     cookies: str          # DeepSeek Cookie
-    email: str            # 显示用标识
+    email: str            # display label
     state: str            # idle | busy | error
     error_count: int
     last_error: str
     last_used: float
 ```
 
-### 18.3 状态流转
+### 18.3 State transitions
 
 ```
-添加 → idle
+add → idle
         │
    acquire() → busy → release() → idle
         │                │
         │  mark_error()  ↓
-        └────────→ error ──→ relogin() (成功 → idle, 失败 → error)
+        └────────→ error ──→ relogin() (success → idle, failure → error)
 ```
 
-### 18.4 轮询分配
+### 18.4 Round-robin allocation
 
-`acquire()` 使用 round-robin 策略遍历账号列表，返回第一个 `idle` 状态的账号并将其标记为 `busy`。如果所有账号均 busy，返回 `None`，server.py 返回 HTTP 503。
+`acquire()` iterates the account list with a round-robin strategy, returning the first `idle` account and marking it `busy`. If all accounts are busy, it returns `None` and server.py returns HTTP 503.
 
-### 18.5 健康检查与重登录
+### 18.5 Health check and relogin
 
 ```python
 def check_health(acct) -> bool:
-    """通过创建 DeepSeek 会话来验证凭证有效性。"""
+    """Verify credential validity by creating a DeepSeek session."""
 ```
 
-`relogin(index)` 对 `error` 状态的账号执行健康检查：成功则重置为 `idle`，失败保留 `error` 状态并更新 `last_error`。
+`relogin(index)` runs a health check on `error`-state accounts: on success it resets to `idle`, on failure it keeps the `error` state and updates `last_error`.
 
-### 15.6 线程安全
+### 15.6 Thread safety
 
-`AccountPool` 使用 `threading.Lock` 保护所有状态变更操作（CRUD、状态切换）。`_WASMSolver` 已有独立锁，两把锁不会形成死锁（无嵌套加锁）。
+`AccountPool` uses a `threading.Lock` to protect all state-changing operations (CRUD, state switches). `_WASMSolver` has its own lock; the two locks cannot deadlock (no nested locking).
 
-### 15.7 初始加载与配置来源
+### 15.7 Initial load and configuration source
 
-- **唯一账号来源**：启动时从 `data/accounts.json` 加载；WebUI/Admin API 的增删改也持久化到该文件。
-- `.env` 不加载账号凭证；`DeepSeekAdapter` 要求调用方显式传入 token 和 cookies。
-- 账号池为空时 `acquire()` 返回 `None`，请求无法选择上游账号；需先在 WebUI 添加账号或填充 `data/accounts.json`。
+- **Sole account source**: loaded from `data/accounts.json` at startup; WebUI/Admin API add/edit/delete also persist to that file.
+- `.env` does not load account credentials; `DeepSeekAdapter` requires the caller to pass token and cookies explicitly.
+- When the account pool is empty, `acquire()` returns `None` and a request cannot select an upstream account; you must first add an account in the WebUI or populate `data/accounts.json`.
 
-### 15.8 非交互式账号池配置（代理 / 自动化工具专用）
+### 15.8 Non-interactive account-pool configuration (for proxies / automation)
 
-> **场景**：给 SDK、脚本、curl、CI、代理等**不经过 WebUI 面板**的自动化工具配置多账号轮询。
-> **要点**：账号凭证只通过 WebUI 账号池或 `data/accounts.json` 配置。`.env` 不提供账号兜底；非交互部署直接维护 `data/accounts.json`。
+> **Scenario**: configure multi-account round-robin for SDKs, scripts, curl, CI, proxies, and other automation that does **not** go through the WebUI panel.
+> **Key point**: account credentials are configured only through the WebUI account pool or `data/accounts.json`. `.env` provides no account fallback; non-interactive deployments maintain `data/accounts.json` directly.
 
-**`data/accounts.json` 完整 schema（v1 明文版）：**
+**Full `data/accounts.json` schema (v1 plaintext):**
 
 ```json
 {
@@ -2025,14 +2025,14 @@ def check_health(acct) -> bool:
 }
 ```
 
-- 字段：`id`(可选,默认自动生成)、`email`(显示标识)、`token`、`cookies`(必填两个)、`created_at`/`updated_at`(可选,整数 epoch 秒)。
-- `version`：`1`(明文) 或 `2`(Fernet 加密)。缺省按明文解析。
-- 该文件**必须** `chmod 600`、所在目录 `700`。含明文 DeepSeek token+cookie，泄露=账号被滥用。
+- Fields: `id` (optional, auto-generated by default), `email` (display label), `token`, `cookies` (both required), `created_at`/`updated_at` (optional, integer epoch seconds).
+- `version`: `1` (plaintext) or `2` (Fernet-encrypted). Parsed as plaintext when absent.
+- This file **must** be `chmod 600`, and its directory `700`. It contains plaintext DeepSeek token+cookie; a leak means account abuse.
 
-**非交互配置步骤：**
+**Non-interactive setup steps:**
 
 ```bash
-# 1. 写入账号池文件（可脚本生成）
+# 1. write the account-pool file (can be script-generated)
 cat > /path/to/project/data/accounts.json <<'JSON'
 {"version":1,"accounts":[
   {"email":"acc-001","token":"<token>","cookies":"<cookies>"}
@@ -2041,94 +2041,92 @@ JSON
 chmod 600 /path/to/project/data/accounts.json
 chmod 700 /path/to/project/data
 
-# 2. 可选：改存储路径（不改则默认 data/accounts.json）
-#    .env 或环境变量设：ACCOUNT_STORE_PATH=/path/to/accounts.json
+# 2. optional: change the store path (defaults to data/accounts.json)
+#    set in .env or an env var: ACCOUNT_STORE_PATH=/path/to/accounts.json
 
-# 3. 在 WebUI「设置」页创建 API Key（非交互必须，否则 /v1/* 报 503）
-#    Key 哈希保存在 data/api_keys.sqlite3；明文仅在创建时显示一次
+# 3. create an API key on the WebUI "Settings" page (required for non-interactive, else /v1/* returns 503)
+#    the key hash is stored in data/api_keys.sqlite3; the plaintext is shown only once at creation
 
-# 4. 启动
+# 4. start
 python -m uvicorn server:app --host 127.0.0.1 --port 8080
 ```
 
-- **加密存储（推荐公网）**：设 `DEEPSEEK_ENCRYPTION_KEY`(Fernet 32B base64)，首次启动会把 `version:1` 明文自动迁移为 `version:2` 加密，并留 `accounts.json.v1.bak`。此时**不要再手写明文文件**（会被 detect_store_version 判成 v2 encrypted 又无 key 而拒绝加载）。
-- **写入时机**：在服务**启动前**写文件，或运行中调 `POST /admin/api/accounts`(需 admin token)。服务启动时 `_load_persisted_accounts()` 一次性全量加载。
+- **Encrypted storage (recommended for public)**: set `DEEPSEEK_ENCRYPTION_KEY` (Fernet 32B base64); on first startup the `version:1` plaintext is auto-migrated to `version:2` encrypted, leaving `accounts.json.v1.bak`. After that **do not hand-write a plaintext file** (detect_store_version would judge it v2 encrypted and, with no key, refuse to load).
+- **Write timing**: write the file **before** the service starts, or call `POST /admin/api/accounts` (needs an admin token) at runtime. At startup `_load_persisted_accounts()` loads everything at once.
 
 ---
 
-## 16. 管理后台 (Admin API)
+## 16. Admin Backend (Admin API)
 
-### 19.1 设计概述
+### 19.1 Design overview
 
-管理后台包含三个部分：
-1. **Admin API** (`admin.py`) — FastAPI APIRouter，挂载在 `/admin/api` 前缀
-2. **AccountPool** (`account_pool.py`) — 账号池核心逻辑
-3. **前端 SPA** (`webui-new/`) — React SPA（v3.0.0+），构建产物 `webui-new/dist/` 由 `server.py` 伺服于 `/webui/*`
+The admin backend has three parts:
+1. **Admin API** (`admin.py`) — a FastAPI APIRouter mounted under the `/admin/api` prefix.
+2. **AccountPool** (`account_pool.py`) — the account-pool core logic.
+3. **Frontend SPA** (`webui-new/`) — a React SPA (v3.0.0+); the build artifacts `webui-new/dist/` are served by `server.py` under `/webui/*`.
 
-所有管理 API 端点（除 `/admin/api/login`）均需要 Bearer Token 认证。
+All admin API endpoints (except `/admin/api/login`) require Bearer Token authentication.
 
-### 19.2 API 端点
+### 19.2 API endpoints
 
-| 方法 | 路径 | 说明 |
+| Method | Path | Notes |
 |------|------|------|
-| `POST` | `/admin/api/login` | 密码登录，返回 token |
-| `GET` | `/admin/api/stats` | 请求统计（总量/成功/失败/平均延迟/tokens/运行时长） |
-| `GET` | `/admin/api/accounts` | 账号列表 + 池状态汇总（total/idle/busy/error） |
-| `POST` | `/admin/api/accounts` | 添加账号（body: token, cookies, email） |
-| `DELETE` | `/admin/api/accounts/{index}` | 删除账号 |
-| `POST` | `/admin/api/accounts/{index}/relogin` | 重登录 error 账号 |
+| `POST` | `/admin/api/login` | password login, returns a token |
+| `GET` | `/admin/api/stats` | request stats (total/success/failure/avg latency/tokens/uptime) |
+| `GET` | `/admin/api/accounts` | account list + pool-status summary (total/idle/busy/error) |
+| `POST` | `/admin/api/accounts` | add an account (body: token, cookies, email) |
+| `DELETE` | `/admin/api/accounts/{index}` | delete an account |
+| `POST` | `/admin/api/accounts/{index}/relogin` | relogin an error account |
 
-### 19.3 认证机制
+### 19.3 Authentication mechanism
 
-- 管理密码设置：`DEEPSEEK_ADMIN_PASSWORD` 环境变量（默认 `admin`）
-- Token 存储：服务端内存 `set`，每次登录生成 64 位 hex token
-- Token 验证：每次请求从 `Authorization: Bearer <token>` 头提取
-- 无过期机制（服务重启后需重新登录）
+- Admin password: the `DEEPSEEK_ADMIN_PASSWORD` env var (default `admin`).
+- Token storage: an in-memory `set` on the server; each login generates a 64-hex token.
+- Token verification: extracted from the `Authorization: Bearer <token>` header on each request.
+- No expiry (relogin needed after a service restart).
 
-### 16.4 请求统计
+### 16.4 Request stats
 
-`StatsSnapshot` 在内存中维护以下计数器：
+`StatsSnapshot` maintains the following counters in memory:
 - `total_requests` / `success_requests` / `failed_requests`
-- `total_latency_ms`（累加后计算平均值）
+- `total_latency_ms` (accumulated, then averaged)
 - `total_prompt_tokens` / `total_completion_tokens`
-- 按模型聚合：`models[model_name] = {requests, prompt_tokens, completion_tokens}`
+- Aggregated per model: `models[model_name] = {requests, prompt_tokens, completion_tokens}`
 
-统计在 `chat()`/`chat_stream()` 调用前后通过 `get_stats().record()` 记录。流式响应在 `finally` 块中确保统计被记录。
+Stats are recorded via `get_stats().record()` before and after `chat()`/`chat_stream()` calls. Streaming responses ensure stats are recorded in a `finally` block.
 
-### 16.5 前端 SPA（v3.0.0+）
+### 16.5 Frontend SPA (v3.0.0+)
 
-- **技术栈**：Vite 5 + React 18 + TypeScript + shadcn/ui（Radix + Tailwind）+ Recharts + Zustand + react-router-dom v6
-- **路由**：`createBrowserRouter(..., { basename: '/webui' })`——SPA 位于 `/webui/*`，深链接刷新由 `server.py` 的 `/webui/{rest}` SPA fallback 回 index.html
-- **构建**：`webui-new/` 下 `npm install && npm run build`（或 `scripts/build.bat`），产物 `webui-new/dist/`。vite `base: '/webui/'` 使资源引用带前缀（改回 `/` 会导致 JS/CSS 404 白屏）
-- **鉴权**：admin token 存 `localStorage`（zustand persist，key `ds2api-auth`）；`api()` 包装器统一带 `Authorization: Bearer <admin-token>`，401 自动 logout 跳 `/login`。`/v1/*` 现也接受该 admin token（见 13.1/18.1）
-- **页面**：登录 / 概览（统计卡 + 请求量/延迟 Recharts 图 + 账号池状态）/ 账号池（表格 + 抽屉详情 + 添加/编辑/删除 + 重登）/ Playground（流式对话，参数仅暴露后端真实转发的字段，reasoning 折叠显示）/ 设置（`/admin/api/env` 只读）/ 404
-- **主题**：浅色/深色/跟随系统，`localStorage` 持久化（key `ds2api-theme`），`main.tsx` 挂载前提前 `applyTheme` 防闪烁
-- **轮询**：概览页 stats 5s / accounts 10s / history 30s，账号页 10s（`useApi` hook 带 AbortController + reqId 防竞态）
+- **Stack**: Vite 5 + React 18 + TypeScript + shadcn/ui (Radix + Tailwind) + Recharts + Zustand + react-router-dom v6.
+- **Routing**: `createBrowserRouter(..., { basename: '/webui' })` — the SPA lives at `/webui/*`; deep-link refreshes fall back to index.html via `server.py`'s `/webui/{rest}` SPA fallback.
+- **Build**: `npm install && npm run build` under `webui-new/` (or `scripts/build.bat`), artifacts in `webui-new/dist/`. vite `base: '/webui/'` makes asset references carry the prefix (changing back to `/` causes JS/CSS 404 white screens).
+- **Auth**: the admin token is stored in `localStorage` (zustand persist, key `ds2api-auth`); the `api()` wrapper uniformly attaches `Authorization: Bearer <admin-token>`, and a 401 auto-logs out and redirects to `/login`. `/v1/*` now also accepts this admin token (see 13.1/18.1).
+- **Pages**: Login / Overview (stat cards + request-volume/latency Recharts + account-pool status) / Account Pool (table + drawer details + add/edit/delete + relogin) / Playground (streaming chat; parameters expose only the fields the backend actually forwards; reasoning shown collapsed) / Settings (`/admin/api/env`, read-only) / 404.
+- **Theme**: light/dark/system, persisted in `localStorage` (key `ds2api-theme`); `main.tsx` calls `applyTheme` before mount to avoid a flash.
+- **Polling**: on Overview, stats 5s / accounts 10s / history 30s; on Accounts, 10s (the `useApi` hook uses an AbortController + reqId to prevent races).
 
-### 16.6 与 server.py 集成
+### 16.6 Integration with server.py
 
 ```python
 # server.py
 from admin import router as admin_router, get_pool, get_stats
 
-pool = get_pool()           # 共享的 AccountPool 实例
+pool = get_pool()           # the shared AccountPool instance
 
-# 在 handler 中使用 pool 获取账号
-acq = pool.acquire()        # 获取一个空闲账号（标记为 busy）
-# ... 使用 acq.adapter.chat_stream(...) ...
-pool.release(acq.acct)      # 释放（标记回 idle）
+# use the pool to get an account in a handler
+acq = pool.acquire()        # get an idle account (marked busy)
+# ... use acq.adapter.chat_stream(...) ...
+pool.release(acq.acct)      # release (marked back to idle)
 
-# 请求完成后记录统计
+# record stats after the request completes
 get_stats().record(model, latency_ms, prompt_tokens, completion_tokens)
 ```
 
 ---
 
-## 17. 关键算法细节
+## 17. Key Algorithm Details
 
-### 20.1 PoW Token 构造
-
-### 20.1 PoW Token 构造
+### 20.1 PoW token construction
 
 ```python
 raw = json.dumps({
@@ -2138,13 +2136,13 @@ raw = json.dumps({
     "answer": nonce,
     "signature": challenge_data["signature"],
     "target_path": challenge_data["target_path"],
-}, separators=(",", ":"))  # 无空格压缩
+}, separators=(",", ":"))  # whitespace-free compaction
 pow_token = base64.b64encode(raw.encode()).decode()
 ```
 
-注意 `separators=(",", ":")` 确保 JSON 无空白，这是 DeepSeek 服务端的期望格式。
+Note that `separators=(",", ":")` ensures the JSON has no whitespace, which is the format the DeepSeek server expects.
 
-### 17.2 SSE 行解析
+### 17.2 SSE line parsing
 
 ```python
 for line in resp.iter_lines():
@@ -2159,13 +2157,13 @@ for line in resp.iter_lines():
         data = json.loads(data_str)
 ```
 
-关键点：
-- `line.strip()` 去除首尾空白（包括 `\r`）
-- `event:` 行是可选的事件类型标签
-- `data:` 行后可能跟空字符串（跳过）
-- JSON 解析失败的行跳过（非关键路径）
+Key points:
+- `line.strip()` removes leading/trailing whitespace (including `\r`).
+- the `event:` line is an optional event-type label.
+- a `data:` line may be followed by an empty string (skip it).
+- lines that fail JSON parsing are skipped (non-critical path).
 
-### 17.3 `_try_finish_capture` 完成判断
+### 17.3 `_try_finish_capture` completion judgment
 
 ```python
 def _is_capture_complete(self) -> bool:
@@ -2176,142 +2174,142 @@ def _is_capture_complete(self) -> bool:
     return False
 ```
 
-同时检测带 `|DSML|` 前缀和不带前缀的两种标签格式。
+It detects both the `|DSML|`-prefixed and the non-prefixed tag formats.
 
-### 14.4 WASM 内存操作
+### 14.4 WASM memory operations
 
-`_WASMSolver._encode(s)` 将字符串写入 WASM 线性内存：
+`_WASMSolver._encode(s)` writes a string into WASM linear memory:
 
 ```python
 def _encode(self, s: str):
     data = s.encode("utf-8")
-    ptr = self.malloc(self.store, len(data), 1)  # wasm 分配 len(data) 字节
+    ptr = self.malloc(self.store, len(data), 1)  # wasm allocate len(data) bytes
     mem = self.memory.data_ptr(self.store)
     for i, b in enumerate(data):
-        mem[ptr + i] = b                         # 逐字节复制到 WASM 内存
+        mem[ptr + i] = b                         # copy byte by byte into WASM memory
     return ptr, len(data)
 ```
 
-关键细节：
+Key details:
 
-| 操作 | 说明 |
+| Operation | Notes |
 |------|------|
-| `self.malloc(len, 1)` | wasm 分配的 `__wbindgen_export_0`，对应 `aligned_alloc`，align=1 无对齐要求 |
-| `mem[ptr + i] = b` | Python 通过 `memory.data_ptr` 获取 WASM 线性内存的 NumPy-like 视图，直接写入 |
-| 返回 `(ptr, length)` | 指针 + 长度两个值传给 wasm 函数 |
+| `self.malloc(len, 1)` | wasm-allocated `__wbindgen_export_0`, corresponding to `aligned_alloc`; align=1 means no alignment requirement |
+| `mem[ptr + i] = b` | Python obtains a NumPy-like view of WASM linear memory via `memory.data_ptr` and writes directly |
+| returns `(ptr, length)` | pointer + length are the two values passed to the wasm function |
 
-`wasm_solve` 的调用参数含义：
+Meaning of the `wasm_solve` call arguments:
 
 ```python
 self.wasm_solve(
     self.store,
-    stack_ptr,     # 栈指针（放结果的位置）
-    chal_ptr,      # challenge 字符串指针
-    chal_len,      # challenge 字符串长度
-    prefix_ptr,    # prefix 字符串指针 = salt + "_" + expire_at + "_"
-    prefix_len,    # prefix 字符串长度
-    float(difficulty),  # difficulty 转为 f64
+    stack_ptr,     # stack pointer (where the result goes)
+    chal_ptr,      # challenge string pointer
+    chal_len,      # challenge string length
+    prefix_ptr,    # prefix string pointer = salt + "_" + expire_at + "_"
+    prefix_len,    # prefix string length
+    float(difficulty),  # difficulty converted to f64
 )
 ```
 
-结果读取：
+Reading the result:
 
 ```python
 ret = int.from_bytes(bytes(mem[stack_ptr:stack_ptr + 4]), byteorder='little', signed=True)
-# ret == 0 → 求解失败，抛出 PoWError
-# ret != 0 → 继续读取 nonce
+# ret == 0 → solve failed, raise PoWError
+# ret != 0 → continue reading the nonce
 
 result = struct.unpack('<d', bytes(mem[stack_ptr + 8:stack_ptr + 16]))[0]
-# 8 字节 f64，小端序，即求解得到的 nonce
+# 8-byte f64, little-endian, i.e. the solved nonce
 ```
 
-栈布局（16 字节）：
+Stack layout (16 bytes):
 
 ```
-stack_ptr + 0:  i32 (4 字节) — 成功标志 (0=失败, !=0=成功)
-stack_ptr + 4:  4 字节填充
-stack_ptr + 8:  f64 (8 字节) — nonce 值
+stack_ptr + 0:  i32 (4 bytes) — success flag (0=failure, !=0=success)
+stack_ptr + 4:  4 bytes padding
+stack_ptr + 8:  f64 (8 bytes) — nonce value
 ```
 
-### 14.5 流式响应中的 `role_sent` 追踪
+### 14.5 The `role_sent` tracking in streaming responses
 
-在 `server.py` 的流式处理中，需要控制 SSE 的初始事件：
+In `server.py`'s streaming handling, the SSE's initial events must be controlled:
 
 ```python
 role_sent = False
 
-# 处理 thinking token
+# handle a thinking token
 elif tt == "thinking":
     content = token.get("content", "")
     if content:
         if not role_sent:
-            yield _openai_chunk(proxy_id, reasoning_content="")  # 空帧标记思考开始
+            yield _openai_chunk(proxy_id, reasoning_content="")  # empty frame marking the start of thinking
             role_sent = True
         yield _openai_chunk(proxy_id, reasoning_content=content)
     continue
 
-# 处理 content token（经 sieve）
+# handle a content token (via the sieve)
 if not role_sent:
     if thinking_mode:
-        yield _openai_chunk(proxy_id, reasoning_content="")  # 仅 thinking 模式发空帧
+        yield _openai_chunk(proxy_id, reasoning_content="")  # emit the empty frame only in thinking mode
     role_sent = True
 yield _openai_chunk(proxy_id, content=evt.data)
 ```
 
-**`reasoning_content` 空帧的条件：**
+**Conditions for the empty `reasoning_content` frame:**
 
-| 路径 | 是否发空帧 | 条件 |
+| Path | Emit empty frame? | Condition |
 |------|-----------|------|
-| Thinking token 循环 | ✅ 总是 | 已在 thinking 分支，空帧作为"thinking 开始"标记 |
-| Text token 循环 | ✅ 仅当 `thinking_mode=True` | 没有 thinking 的纯 text 流不应发 reasoning |
-| Flush 路径 | ✅ 仅当 `thinking_mode=True` | 同上 |
-| Fallback 路径 | ✅ 仅当 `thinking_mode=True` | 同上 |
+| Thinking token loop | ✅ always | already in the thinking branch; the empty frame marks "thinking start" |
+| Text token loop | ✅ only when `thinking_mode=True` | a pure text stream with no thinking should not emit reasoning |
+| Flush path | ✅ only when `thinking_mode=True` | same as above |
+| Fallback path | ✅ only when `thinking_mode=True` | same as above |
 
-**`role_sent` 标志第 1 次内容发送后变为 True，后续不再重复发初始帧。**
+**The `role_sent` flag becomes True after the first content send, and the initial frame is not sent again afterwards.**
 
-#### `finish_reason: "stop"` 结束帧
+#### The `finish_reason: "stop"` end frame
 
-流式响应末尾必须发送 `finish_reason: "stop"` 结束帧（`_openai_chunk(proxy_id, finish=True)`），否则客户端无法区分正常完成与异常断连。
+The end of a streaming response must send a `finish_reason: "stop"` end frame (`_openai_chunk(proxy_id, finish=True)`), otherwise the client cannot distinguish a normal completion from an abnormal disconnect.
 
 ```python
-# 流末尾
+# end of stream
 yield _openai_chunk(proxy_id, finish=True)  # delta: {}, finish_reason: "stop"
 yield "data: [DONE]\n\n"
 ```
 
-`_openai_chunk(proxy_id, finish=True)` 产出：
+`_openai_chunk(proxy_id, finish=True)` yields:
 ```json
 {"index": 0, "delta": {}, "finish_reason": "stop"}
 ```
 
-历史版本缺少此帧，导致客户端将 `[DONE]` 前的最后 content chunk 的 `finish_reason: null` 作为结束信号，误判为 `finish: "other"`。
+Older versions lacked this frame, making the client treat the `finish_reason: null` of the last content chunk before `[DONE]` as the end signal, misjudging it as `finish: "other"`.
 
 ---
 
-## 18. 已知限制与边界情况
+## 18. Known Limitations and Edge Cases
 
-### 18.1 认证相关
+### 18.1 Authentication
 
-- **Token/Cookie 过期**：不定期失效，需重新获取。没有自动续期机制（webui 账号池提供一键重登录）。
-- **账号来源**：仅由 WebUI/Admin API 管理并持久化到 `data/accounts.json`，或直接维护该文件；`.env` 不加载账号凭证。
-- **两套鉴权**：`/v1/*` 客户端用 WebUI「设置」页管理的 API Key（Bearer 或 `x-api-key`，SQLite 仅存哈希）；webui 管理端用 `DEEPSEEK_ADMIN_PASSWORD` 换 admin 会话 token。旧版 `API_KEYS` / `DEEPSEEK_API_KEY` 仅首次创建 Key 数据库时导入。
-- **admin token 放行 `/v1/*`**（v2.2.0+ 行为）：`_check_api_auth` 先验证 `verify_admin_token()`，有效则放行——webui 用同一 token 调模型列表/Playground。持有 admin token 者本已能完全控制账号池，不扩大风险面。
-- **登录节流**：每 IP 5 次失败 / 300s 窗口，超限返回 429；计数为进程内存态，重启清零。
+- **Token/Cookie expiry**: expires irregularly and must be re-fetched. There is no auto-renewal (the webui account pool offers one-click relogin).
+- **Account source**: managed only by the WebUI/Admin API and persisted to `data/accounts.json`, or by maintaining that file directly; `.env` does not load account credentials.
+- **Two auth schemes**: `/v1/*` clients use an API key managed on the WebUI "Settings" page (Bearer or `x-api-key`, SQLite stores only the hash); the webui admin side exchanges `DEEPSEEK_ADMIN_PASSWORD` for an admin-session token. Legacy `API_KEYS` / `DEEPSEEK_API_KEY` are imported only when the key database is first created.
+- **admin token admitted on `/v1/*`** (v2.2.0+ behavior): `_check_api_auth` first verifies `verify_admin_token()` and admits if valid — the webui uses the same token for the model list/Playground. Anyone holding an admin token already has full control of the account pool, so this does not widen the risk surface.
+- **Login throttling**: 5 failures per IP / 300s window, returning 429 over the limit; the count is in-process memory and resets on restart.
 
-### 18.2 功能限制
+### 18.2 Functional limitations
 
-| 限制 | 原因 | 影响 |
+| Limitation | Reason | Impact |
 |------|------|------|
-| 不支持并行工具调用 | DSML 协议限制 | 每次只能调用一个工具 |
-| `tool_choice` 不可靠 | 提示词注入方案限制 | 模型可能选择不调用工具 |
-| `max_tokens` 无效 | DeepSeek API 不支持 | 超长回复需自行截断 |
-| `temperature`/`top_p` 无效 | DeepSeek API 不支持 | 无法控制随机性 |
-| 无多模态 | 网页 API 不支持图片 | 仅文本交互 |
-| 非流式 OpenAI 端点不输出 reasoning_content | OpenAI 非流式响应模型未包含该字段 | 需要推理过程请用流式模式（Anthropic 非流式已支持 thinking 块） |
+| No parallel tool calls | DSML protocol limitation | only one tool at a time |
+| `tool_choice` unreliable | prompt-injection approach limitation | the model may choose not to call a tool |
+| `max_tokens` ineffective | DeepSeek API does not support it | long replies must be truncated yourself |
+| `temperature`/`top_p` ineffective | DeepSeek API does not support them | cannot control randomness |
+| No multimodal | the web API does not support images | text interaction only |
+| OpenAI non-streaming endpoint does not output reasoning_content | the OpenAI non-streaming response model does not include this field | use streaming for the reasoning process (Anthropic non-streaming already supports thinking blocks) |
 
-### 18.3 CORS 跨域支持
+### 18.3 CORS cross-origin support
 
-项目使用 FastAPI 的 `CORSMiddleware` 处理跨域请求。配置位于 `server.py`：
+The project uses FastAPI's `CORSMiddleware` to handle cross-origin requests. The config is in `server.py`:
 
 ```python
 app.add_middleware(
@@ -2323,99 +2321,99 @@ app.add_middleware(
 )
 ```
 
-**默认允许所有来源、方法和请求头。** 这解决了浏览器插件（如 YouTube 字幕翻译等 Chrome 扩展）在使用 OpenAI 兼容接口时因 CORS 预检请求（`OPTIONS`）失败的问题。如果部署在需要限制跨域访问的环境，可相应收紧 `allow_origins` 等参数。
+**Allows all origins, methods, and headers by default.** This solves the problem of browser extensions (like YouTube subtitle translation and other Chrome extensions) failing on the CORS preflight (`OPTIONS`) when using the OpenAI-compatible API. If deployed in an environment that must restrict cross-origin access, tighten `allow_origins` and so on accordingly.
 
-### 18.4 稳定性
+### 18.4 Stability
 
-- **WASM 求解失败**：罕见情况下求解超时或返回 0，需重试
-- **Session 创建失败**：PoW 过期或凭证失效
-- **SSE 断流**：长时间响应可能被 DeepSeek 中断
-- **DSML 解析失败**：模型输出格式不符合预期时，工具调用不生效
+- **WASM solve failure**: in rare cases the solve times out or returns 0, requiring a retry.
+- **Session creation failure**: the PoW expired or the credentials are invalid.
+- **SSE stream break**: a long response may be interrupted by DeepSeek.
+- **DSML parse failure**: when the model's output does not match the expected format, the tool call does not take effect.
 
-### 18.5 边界情况处理
+### 18.5 Edge-case handling
 
-**空消息列表：** `_build_prompt([])` 返回 `""`，DeepSeek 可能回复空或报错。
+**Empty message list:** `_build_prompt([])` returns `""`, and DeepSeek may reply empty or error.
 
-### 18.6 陈旧字节码缓存 (`__pycache__`)
+### 18.6 Stale bytecode cache (`__pycache__`)
 
-Python 的 `__pycache__` 目录缓存编译后的字节码（`.pyc`）。当源文件被修改但缓存未刷新时，python server.py 可能运行旧版本代码。
+Python's `__pycache__` directory caches compiled bytecode (`.pyc`). When the source is modified but the cache is not refreshed, `python server.py` may run old code.
 
-**触发条件：**
-- 编辑代码文件后直接启动
-- 之前运行过且 `__pycache__` 已存在
-- uvicorn 的 `--reload` 模式虽然检测文件变更，但不会清理 `__pycache__`
+**Triggers:**
+- Starting directly after editing a code file.
+- Having run before and `__pycache__` already exists.
+- uvicorn's `--reload` mode detects file changes but does not clean `__pycache__`.
 
-**症状：**
-- 修改代码后行为不变
-- print 调试语句不出现
-- 旧版 bug 依然存在
-- 新增的函数抛出 `ImportError` 或 `NameError`
+**Symptoms:**
+- Behavior unchanged after a code edit.
+- Debug print statements do not appear.
+- Old bugs persist.
+- Newly added functions throw `ImportError` or `NameError`.
 
-**排查方法：**
+**Troubleshooting:**
 ```bash
-# 比较 .py 和 .pyc 的时间戳
+# compare .py and .pyc timestamps
 dir /s __pycache__\*.pyc
 
-# 查看 Python 实际加载的模块路径
+# see the module path Python actually loads
 python -c "import adapter; print(adapter.__file__)"
 ```
 
-**根治方法：**
+**Root fix:**
 ```bash
-# 删除所有 __pycache__ 目录
+# delete all __pycache__ directories
 for /d /r . %d in (__pycache__) do @if exist "%d" rd /s /q "%d"
 ```
 
-**预防措施：**
-- 开发时使用 `--reload` 模式
-- 在 `start.bat` 末尾添加 `__pycache__` 清理命令
-- 修改代码后手动删除 `__pycache__`
+**Prevention:**
+- Use `--reload` mode during development.
+- Add a `__pycache__` cleanup command at the end of `start.bat`.
+- Manually delete `__pycache__` after editing code.
 
 ### 15.6 README.md
 
-`README.md` 已存在并持续同步（v3.2.1 摘要 + 快速开始 + API 文档）。维护注意事项：
-- 改 README 时同步更新 "v3.2.1 修复" 摘要与快速开始（启动/配置/凭证语义）
-- start.bat 行为（自动 venv/依赖/WebUI 构建/自动开浏览器）在 README 有对应描述，改动脚本时同步
+`README.md` exists and is kept in sync (v3.2.1 summary + quick start + API docs). Maintenance notes:
+- When changing the README, keep the "v3.2.1 fixes" summary and quick start (startup/config/credential semantics) in sync.
+- The start.bat behavior (auto venv/deps/WebUI build/auto-open browser) is described in the README; keep it in sync when changing the script.
 
-### 15.7 Windows bash curl 中文编码问题
+### 15.7 Windows bash curl Chinese-encoding issue
 
-在 Windows bash（Git Bash）中，curl 发送包含中文的 JSON body 可能导致请求被拒：
+In Windows bash (Git Bash), curl sending a JSON body containing Chinese may get the request rejected:
 
 ```bash
-# 在 Windows bash 中可能失败（返回 422 Pydantic 校验错误）
+# may fail in Windows bash (returns a 422 Pydantic validation error)
 curl -s -X POST ... -d '{"messages":[{"role":"user","content":"你好"}],"stream":true}'
 
-# 使用英文则正常
+# works with English
 curl -s -X POST ... -d '{"messages":[{"role":"user","content":"hello"}],"stream":true}'
 ```
 
-**根本原因：** Windows bash 在处理命令行参数中的非 ASCII 字符时，编码传递与 Python/FastAPI 的 JSON 解析器不一致，导致 Pydantic 模型校验失败（`There was an error parsing the body`）。
+**Root cause:** Windows bash passes non-ASCII characters in command-line arguments with an encoding inconsistent with Python/FastAPI's JSON parser, causing Pydantic model validation to fail (`There was an error parsing the body`).
 
-**解决方法：**
-1. 使用 ASCII-only 内容测试（`"hello"` 替换 `"你好"`）
-2. 将 JSON 写入文件后用 `-d @file.json` 传递
-3. 使用 PowerShell 的 `Invoke-RestMethod`
-4. 使用 Postman、Bruno 等 GUI 工具
+**Solutions:**
+1. Test with ASCII-only content (`"hello"` instead of `"你好"`).
+2. Write the JSON to a file and pass it with `-d @file.json`.
+3. Use PowerShell's `Invoke-RestMethod`.
+4. Use a GUI tool like Postman or Bruno.
 
-这**不影响实际使用**——用户的工具/客户端（如 OpenAI SDK、Claude Code、自定义工具）使用标准的 HTTP POST 发送 UTF-8 JSON body，不受此限制影响。
+This **does not affect real usage** — the user's tools/clients (OpenAI SDK, Claude Code, custom tools) send a UTF-8 JSON body via a standard HTTP POST and are not affected.
 
-### 15.8 `.env` 变更需重启服务
+### 15.8 `.env` changes require a service restart
 
-`server.py` 和 `adapter.py` 都在模块加载时调用 `load_dotenv()` 读取 `.env`：
+Both `server.py` and `adapter.py` call `load_dotenv()` at module load to read `.env`:
 
 ```python
-# 模块级
+# module level
 load_dotenv()
 MODE = os.environ.get("MODE", "auto").strip().lower()
 THINKING = os.environ.get("THINKING", "auto").strip().lower()
 ```
 
-这意味着**修改 `.env` 后必须重启服务器**才能生效。仅保存文件不会触发重新加载。使用 `--reload` 模式时 uvicorn 会检测文件变更然后重启，但 `.env` 变更不在 uvicorn 的文件监控范围内——需要手动重启。
+This means **after changing `.env` you must restart the server** for it to take effect. Merely saving the file does not trigger a reload. In `--reload` mode uvicorn detects file changes and restarts, but `.env` changes are not within uvicorn's file watch — a manual restart is needed.
 
 
-## 19. 常见调试方法
+## 19. Common Debugging Methods
 
-### 19.1 测试 PoW 和基本连接
+### 19.1 Test PoW and basic connectivity
 
 ```python
 from adapter import DeepSeekAdapter, TOKEN, COOKIES
@@ -2424,27 +2422,27 @@ sid = adapter.create_session()
 print(f"Session: {sid}")
 ```
 
-预期输出：`Session: <uuid>`。如失败检查凭证是否过期。
+Expected output: `Session: <uuid>`. On failure, check whether the credentials expired.
 
-### 19.2 测试快速模式
+### 19.2 Test quick mode
 
 ```python
-content = adapter.chat(sid, "User: 你好")
+content = adapter.chat(sid, "User: Hello")
 print(f"Reply: {content}")
 ```
 
-### 19.3 测试专家模式
+### 19.3 Test expert mode
 
 ```python
-content = adapter.chat(sid, "User: 思考一个哲学问题",
+content = adapter.chat(sid, "User: Think about a philosophy question",
                         thinking_enabled=True, search_enabled=False)
 print(f"Reply: {content}")
 ```
 
-### 16.4 测试专家模式流式
+### 16.4 Test expert-mode streaming
 
 ```python
-for token in adapter.chat_stream(sid, "User: 你好",
+for token in adapter.chat_stream(sid, "User: Hello",
                                   thinking_enabled=True):
     if isinstance(token, dict):
         if token.get("__type") == "thinking":
@@ -2455,9 +2453,9 @@ for token in adapter.chat_stream(sid, "User: 你好",
         print(token, end="")
 ```
 
-### 16.5 原始 SSE 抓包
+### 16.5 Raw SSE capture
 
-修改 `chat_stream()` 或使用以下片段打印原始 SSE：
+Modify `chat_stream()` or use the following snippet to print the raw SSE:
 
 ```python
 resp = adapter._client.post(
@@ -2466,77 +2464,77 @@ for line in resp.iter_lines():
     print(line)
 ```
 
-### 16.6 使用 curl 快速测试
+### 16.6 Quick test with curl
 
-**健康检查：**
+**Health check:**
 ```bash
 curl http://localhost:8080/health
 ```
 
-**模型列表：**
+**Model list:**
 ```bash
 curl http://localhost:8080/v1/models
 ```
 
-**非流式普通对话：**
+**Non-streaming normal conversation:**
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions ^
   -H "Content-Type: application/json" ^
-  -d "{\"messages\":[{\"role\":\"user\",\"content\":\"你好\"}],\"stream\":false}"
+  -d "{\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}],\"stream\":false}"
 ```
 
-**流式普通对话：**
+**Streaming normal conversation:**
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions ^
   -H "Content-Type: application/json" ^
-  -d "{\"messages\":[{\"role\":\"user\",\"content\":\"你好\"}],\"stream\":true}"
+  -d "{\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}],\"stream\":true}"
 ```
 
-**专家模式（流式）：**
+**Expert mode (streaming):**
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions ^
   -H "Content-Type: application/json" ^
-  -d "{\"messages\":[{\"role\":\"user\",\"content\":\"思考一个哲学问题\"}],\"stream\":true,\"thinking_mode\":true}"
+  -d "{\"messages\":[{\"role\":\"user\",\"content\":\"think about a philosophy question\"}],\"stream\":true,\"thinking_mode\":true}"
 ```
 
-**工具调用：**
+**Tool call:**
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions ^
   -H "Content-Type: application/json" ^
-  -d "{\"messages\":[{\"role\":\"user\",\"content\":\"北京天气怎么样？\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"获取天气\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}}}}]}"
+  -d "{\"messages\":[{\"role\":\"user\",\"content\":\"what's the weather in Beijing?\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"get weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}}}}]}"
 ```
 
-### 16.7 排查步骤（按优先级排序）
+### 16.7 Troubleshooting steps (in priority order)
 
-当服务异常时的系统化排查流程：
+A systematic troubleshooting flow when the service misbehaves:
 
-1. **健康检查** → `/health` 返回 `{"status":"ok"}`？
-2. **凭证有效性** → `adapter.create_session()` 是否成功？
-3. **PoW 求解** → WASM 是否正常加载？
-4. **快速模式** → 最基本的 `adapter.chat(sid, "User: 你好")` 是否返回？
-5. **专家模式** → `thinking_enabled=True` 是否触发 fragment 状态机？
-6. **流式输出** → `chat_stream()` 能否逐 token 产出？
-7. **工具调用** → DSML 标签是否被 StreamSieve 正确捕获？
+1. **Health check** → does `/health` return `{"status":"ok"}`?
+2. **Credential validity** → does `adapter.create_session()` succeed?
+3. **PoW solving** → does the WASM load correctly?
+4. **Quick mode** → does the most basic `adapter.chat(sid, "User: Hello")` return?
+5. **Expert mode** → does `thinking_enabled=True` trigger the fragment state machine?
+6. **Streaming output** → can `chat_stream()` yield token by token?
+7. **Tool calls** → does StreamSieve correctly capture DSML tags?
 
-### 16.8 常见错误
+### 16.8 Common errors
 
-| 错误信息 | 可能原因 | 解决 |
+| Error message | Possible cause | Fix |
 |---------|---------|------|
-| `Authorization Failed (invalid token)` | Token 过期 | 更新 .env |
-| `Update to the latest version to use Expert` | X-App-Version 版本过低 | 改为 `20241129.1` |
-| `WASM solver found no solution` | PoW 难度过高/求解异常 | 重试 |
-| `Session creation failed` | PoW 过期/凭证无效 | 重试/更新凭证 |
-| `Server disconnected without sending a response` | DeepSeek 服务端超时或 httpx 超时太短 | 检查 timeout=120；重试 |
-| `data: {"type":"error","content":"..."}` | DeepSeek 业务错误 | 根据 content 排查 |
-| 修改代码后行为不变 | `__pycache__` 陈旧缓存 | 删除 `__pycache__` 目录 |
-| `ImportError: cannot import name 'X' from 'adapter'` | 模块缓存旧版本 | 删除 `__pycache__` 后重启 |
-| `PoWError: WASM solver found no solution` | WASM 二进制不兼容 | 检查 wasmtime 版本或重新提取 WASM |
-| 进程已退出但端口仍占用 | 前一个 uvicorn 未完全终止 | 用 `netstat -ano | findstr :<PORT>` 找到 PID 后 taskkill |
+| `Authorization Failed (invalid token)` | Token expired | update .env |
+| `Update to the latest version to use Expert` | X-App-Version too low | change to `20241129.1` |
+| `WASM solver found no solution` | PoW difficulty too high / solve anomaly | retry |
+| `Session creation failed` | PoW expired / invalid credentials | retry / update credentials |
+| `Server disconnected without sending a response` | DeepSeek server timeout or httpx timeout too short | check timeout=120; retry |
+| `data: {"type":"error","content":"..."}` | DeepSeek business error | troubleshoot by the content |
+| Behavior unchanged after a code edit | stale `__pycache__` cache | delete the `__pycache__` directory |
+| `ImportError: cannot import name 'X' from 'adapter'` | stale module cache | delete `__pycache__` and restart |
+| `PoWError: WASM solver found no solution` | incompatible WASM binary | check the wasmtime version or re-extract the WASM |
+| Process exited but the port is still held | the previous uvicorn did not fully terminate | find the PID with `netstat -ano | findstr :<PORT>` then taskkill |
 
-### 16.9 使用 HAR 分析
+### 16.9 Analyzing with HAR
 
-1. 浏览器 F12 → Network → 导出 HAR
-2. 用 `jq` 或 Python 解析：
+1. Browser F12 → Network → export HAR.
+2. Parse with `jq` or Python:
 ```python
 import json
 with open("file.har") as f:
@@ -2549,64 +2547,64 @@ for entry in har["log"]["entries"]:
 
 ---
 
-## 20. 协议变更预警
+## 20. Protocol Change Warnings
 
-以下因素可能导致项目失效，需要及时更新：
+The following factors may break the project and need timely updates:
 
-### 20.1 前端更新
+### 20.1 Frontend updates
 
-DeepSeek 前端更新可能改变：
-- API 端点路径（`/api/v0/chat/completion` → 其他）
-- 请求体字段名/格式
-- SSE 事件结构
-- PoW 算法或 challenge 格式
-- 请求头要求
+A DeepSeek frontend update may change:
+- API endpoint paths (`/api/v0/chat/completion` → something else)
+- request-body field names/formats
+- SSE event structure
+- the PoW algorithm or challenge format
+- request-header requirements
 
-**检测方法**：定期用浏览器 DevTools 抓取最新 HAR 对比。
+**Detection**: periodically capture the latest HAR with the browser DevTools and compare.
 
-### 17.2 WASM 更新
+### 17.2 WASM updates
 
-`sha3_wasm_bg.wasm` 可能被 DeepSeek 更新：
-- 导出函数名变更
-- 求解算法变更
-- 难度算法调整
+`sha3_wasm_bg.wasm` may be updated by DeepSeek:
+- exported-function name changes
+- solver-algorithm changes
+- difficulty-algorithm adjustments
 
-**检测方法**：检查 `create_pow_challenge` 响应中的 `algorithm` 字段。
+**Detection**: check the `algorithm` field in the `create_pow_challenge` response.
 
-### 17.3 反爬升级
+### 17.3 Anti-scraping upgrades
 
-DeepSeek 可能引入新的反爬机制：
-- 额外的签名/加密头
-- JS Challenge（类似 Cloudflare）
-- 请求频率限制
-- IP 封锁
+DeepSeek may introduce new anti-scraping mechanisms:
+- extra signature/encryption headers
+- a JS Challenge (like Cloudflare)
+- request-frequency limits
+- IP blocking
 
-### 17.4 维护策略
+### 17.4 Maintenance strategy
 
-1. **定期抓包**（至少每月一次）
-2. **HAR 对比**：保存基线 HAR 文件，对比差异
-3. **降级方案**：当专家模式失效时，至少保证快速模式可用
-4. **抓包要点**：
-   - 关注 `chat_session/create` 和 `chat/completion` 两个核心端点
-   - 记录所有请求头，特别关注 `X-` 开头的自定义头
-   - 记录 SSE 事件序列，注意新增的 `p` 路径或 `o` 操作
-   - 关注 `model_type` 字段的枚举值变化
+1. **Capture regularly** (at least monthly).
+2. **HAR comparison**: save a baseline HAR file and compare differences.
+3. **Degradation plan**: when expert mode fails, at least keep quick mode working.
+4. **Capture focus**:
+   - Focus on the two core endpoints `chat_session/create` and `chat/completion`.
+   - Record all request headers, especially custom ones starting with `X-`.
+   - Record the SSE event sequence, noting new `p` paths or `o` operations.
+   - Watch for changes in the enum values of the `model_type` field.
 
-### 17.5 WASM 二进制更新流程
+### 17.5 WASM binary update procedure
 
-DeepSeek 前端更新可能导致 WASM 二进制变化。完整更新流程：
+A DeepSeek frontend update may change the WASM binary. Full update procedure:
 
 ```bash
-# 步骤 1: 从 DeepSeek 前端提取新 WASM
-# 方法 A: 浏览器 DevTools → Network → 搜索 "sha3_wasm_bg.wasm" → 下载
-# 方法 B: 在 JS 中定位 wasm 加载点
-#   打开 chat.deepseek.com → F12 → Sources
-#   搜索 "sha3_wasm_bg.wasm" 找到加载代码
+# Step 1: extract the new WASM from the DeepSeek frontend
+# Method A: browser DevTools → Network → search "sha3_wasm_bg.wasm" → download
+# Method B: locate the wasm load point in JS
+#   open chat.deepseek.com → F12 → Sources
+#   search "sha3_wasm_bg.wasm" to find the loading code
 
-# 步骤 2: 覆盖旧文件
+# Step 2: overwrite the old file
 copy /y new_sha3_wasm_bg.wasm sha3_wasm_bg.wasm
 
-# 步骤 3: 验证导出函数
+# Step 3: verify the exports
 python -c "
 from wasmtime import Store, Module, Instance
 with open('sha3_wasm_bg.wasm', 'rb') as f:
@@ -2618,7 +2616,7 @@ print('has wasm_solve:', 'wasm_solve' in exports)
 print('has memory:', 'memory' in exports)
 "
 
-# 步骤 4: 测试 PoW 求解
+# Step 4: test PoW solving
 python -c "
 from adapter import DeepSeekAdapter, TOKEN, COOKIES
 a = DeepSeekAdapter(token=TOKEN, cookies=COOKIES)
@@ -2626,20 +2624,20 @@ c = a._get_challenge()
 print('Challenge solved')
 "
 
-# 步骤 5: 测试完整对话
+# Step 5: test a full conversation
 python -c "
 from adapter import DeepSeekAdapter, TOKEN, COOKIES
 a = DeepSeekAdapter(token=TOKEN, cookies=COOKIES)
 sid = a.create_session()
-r = a.chat(sid, 'User: 你好')
+r = a.chat(sid, 'User: Hello')
 print('Reply:', r[:100])
 "
 ```
 
-**变更检测脚本**（推荐定期运行）：
+**Change-detection script** (recommended to run regularly):
 ```python
 import hashlib
-old_hash = "已知的旧文件 SHA256"  # 首次运行时记录
+old_hash = "the known old file SHA256"  # record on first run
 with open("sha3_wasm_bg.wasm", "rb") as f:
     new_hash = hashlib.sha256(f.read()).hexdigest()
 if new_hash != old_hash:
@@ -2650,7 +2648,7 @@ if new_hash != old_hash:
 
 ---
 
-> 本文档最后更新：2026-08-08
-> 基于 `chat.deepseek.com` HAR 抓包分析（2026-05-06）
-> WASM 引擎版本：`sha3_wasm_bg.wasm`（DeepSeek 前端提取，含 `__wbindgen_export_0` malloc / `__wbindgen_export_1` realloc / `__wbindgen_export_2` free）
-> 协议版本：DeepSeek Chat v2.0.0 (X-Client-Version)
+> Document last updated: 2026-08-08
+> Based on `chat.deepseek.com` HAR capture analysis (2026-05-06)
+> WASM engine version: `sha3_wasm_bg.wasm` (extracted from the DeepSeek frontend, with `__wbindgen_export_0` malloc / `__wbindgen_export_1` realloc / `__wbindgen_export_2` free)
+> Protocol version: DeepSeek Chat v2.0.0 (X-Client-Version)

@@ -26,7 +26,7 @@ export function ModelSelector({ value, onChange, labels }: Props) {
   if (error) {
     return (
       <div className="text-xs text-destructive">
-        无法加载模型列表：{' '}
+        Failed to load the model list:{' '}
         {error instanceof ApiCallError ? error.message : String(error)}
       </div>
     )
@@ -37,7 +37,7 @@ export function ModelSelector({ value, onChange, labels }: Props) {
   return (
     <Select value={value} onValueChange={onChange}>
       <SelectTrigger>
-        <SelectValue placeholder="选择模型…" />
+        <SelectValue placeholder="Select a model…" />
       </SelectTrigger>
       <SelectContent>
         {models.map((m) => (

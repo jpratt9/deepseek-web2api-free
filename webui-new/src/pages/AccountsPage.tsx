@@ -44,29 +44,29 @@ export default function AccountsPage() {
     if (!deleting) return
     try {
       await del(`/admin/api/accounts/${encodeURIComponent(deleting.id)}`)
-      toast({ title: '账号已删除', variant: 'success' })
+      toast({ title: 'Account deleted', variant: 'success' })
       setDeleting(null)
       refresh()
     } catch (e) {
       const msg = e instanceof ApiCallError ? e.message : String(e)
-      toast({ title: '删除失败', description: msg, variant: 'destructive' })
+      toast({ title: 'Delete failed', description: msg, variant: 'destructive' })
     }
   }
 
   return (
     <div className="space-y-6 animate-fade-in">
       <PageHeader
-        title="账号池"
-        description={`管理 DeepSeek 账号 · 共 ${data?.total ?? '—'} 个`}
+        title="Account Pool"
+        description={`Manage DeepSeek accounts · ${data?.total ?? '—'} total`}
         actions={
           <>
             <Button variant="outline" onClick={refresh} disabled={loading}>
               <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-              刷新
+              Refresh
             </Button>
             <Button onClick={() => setAddOpen(true)}>
               <Plus className="h-4 w-4" />
-              添加账号
+              Add account
             </Button>
           </>
         }
@@ -82,14 +82,14 @@ export default function AccountsPage() {
             </div>
           ) : error ? (
             <div className="p-8 text-center text-sm text-destructive">
-              加载失败：{error.message}
+              Failed to load: {error.message}
             </div>
           ) : accounts.length === 0 ? (
             <div className="p-12 text-center">
               <Users className="mx-auto h-10 w-10 text-muted-foreground/40" />
-              <h3 className="mt-3 text-sm font-medium">暂无账号</h3>
+              <h3 className="mt-3 text-sm font-medium">No accounts yet</h3>
               <p className="mt-1 text-xs text-muted-foreground">
-                点击右上角“添加账号”，也可以将账号写入 data/accounts.json。
+                Click "Add account" in the top right, or write accounts into data/accounts.json.
               </p>
             </div>
           ) : (
@@ -107,8 +107,8 @@ export default function AccountsPage() {
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>添加账号</DialogTitle>
-            <DialogDescription>输入 DeepSeek 账号的 Token 与 Cookies 即可使用</DialogDescription>
+            <DialogTitle>Add account</DialogTitle>
+            <DialogDescription>Enter the DeepSeek account's Token and Cookies to start using it</DialogDescription>
           </DialogHeader>
           <AccountForm
             onSaved={() => {
@@ -124,9 +124,9 @@ export default function AccountsPage() {
       <Dialog open={!!editing} onOpenChange={(o) => !o && setEditing(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>编辑账号</DialogTitle>
+            <DialogTitle>Edit account</DialogTitle>
             <DialogDescription>
-              留空 Token / Cookies 表示不修改对应字段
+              Leave Token / Cookies blank to keep those fields unchanged
             </DialogDescription>
           </DialogHeader>
           {editing && (
@@ -146,16 +146,16 @@ export default function AccountsPage() {
       <AlertDialog open={!!deleting} onOpenChange={(o) => !o && setDeleting(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>删除账号？</AlertDialogTitle>
+            <AlertDialogTitle>Delete account?</AlertDialogTitle>
             <AlertDialogDescription>
-              将删除账号 <code className="font-mono text-xs">{deleting?.id}</code>。
-              此操作不可撤销。
+              This deletes account <code className="font-mono text-xs">{deleting?.id}</code>.
+              This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
-              确认删除
+              Delete
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

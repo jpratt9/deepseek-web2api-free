@@ -27,14 +27,14 @@ export function AccountTable({ accounts, onEdit, onDelete, onSelect }: Props) {
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead>标识</TableHead>
-          <TableHead>来源</TableHead>
-          <TableHead>状态</TableHead>
+          <TableHead>Label</TableHead>
+          <TableHead>Source</TableHead>
+          <TableHead>State</TableHead>
           <TableHead>Token</TableHead>
           <TableHead>Cookies</TableHead>
-          <TableHead className="text-right">错误</TableHead>
-          <TableHead>最后错误</TableHead>
-          <TableHead className="text-right">操作</TableHead>
+          <TableHead className="text-right">Errors</TableHead>
+          <TableHead>Last error</TableHead>
+          <TableHead className="text-right">Actions</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -51,7 +51,7 @@ export function AccountTable({ accounts, onEdit, onDelete, onSelect }: Props) {
               }}
               tabIndex={0}
               role="button"
-              aria-label={`查看账号 ${a.email || a.id}`}
+              aria-label={`View account ${a.email || a.id}`}
             >
               <TableCell>
                 <Tooltip>
@@ -64,7 +64,7 @@ export function AccountTable({ accounts, onEdit, onDelete, onSelect }: Props) {
                 </Tooltip>
               </TableCell>
               <TableCell>
-                <Badge variant="secondary">持久化</Badge>
+                <Badge variant="secondary">Persisted</Badge>
               </TableCell>
               <TableCell>
                 <StateBadge state={a.state} />
@@ -115,12 +115,12 @@ export function AccountTable({ accounts, onEdit, onDelete, onSelect }: Props) {
                         size="icon"
                         className="h-7 w-7"
                         onClick={() => onEdit(a)}
-                        aria-label="编辑"
+                        aria-label="Edit"
                       >
                         <Pencil className="h-3.5 w-3.5" />
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent>编辑</TooltipContent>
+                    <TooltipContent>Edit</TooltipContent>
                   </Tooltip>
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -129,12 +129,12 @@ export function AccountTable({ accounts, onEdit, onDelete, onSelect }: Props) {
                         size="icon"
                         className="h-7 w-7 text-muted-foreground hover:text-destructive"
                         onClick={() => onDelete(a)}
-                        aria-label="删除"
+                        aria-label="Delete"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </TooltipTrigger>
-                    <TooltipContent>删除</TooltipContent>
+                    <TooltipContent>Delete</TooltipContent>
                   </Tooltip>
                 </div>
               </TableCell>

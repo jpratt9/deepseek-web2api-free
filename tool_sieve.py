@@ -1,7 +1,8 @@
 """
-StreamSieve — 流式筛分引擎
+StreamSieve — streaming sieve engine
 
-逐字符检测 DSML 工具调用标签，从 SSE 流中实时分离正文与工具调用。
+Detects DSML tool-call tags character by character, separating body text from
+tool calls in real time out of the SSE stream.
 
 v2.2.0 fixes:
 * ``feed()`` no longer recurses on suffix tail; replaced with iterative loop.
@@ -35,7 +36,7 @@ class SieveEvent:
 
 
 class StreamSieve:
-    """实时筛分 SSE 流中的 DSML 工具调用。"""
+    """Sieve DSML tool calls out of the SSE stream in real time."""
 
     _TOOL_STARTS = [
         "<|DSML|tool_calls>",
@@ -181,7 +182,7 @@ class StreamSieve:
                 if suffix:
                     events.append(SieveEvent("text", suffix))
             else:
-                # 没闭合，当正文处理
+                # Not closed; treat as body text
                 events.append(SieveEvent("text", self._capture_buf))
             self._capture_buf = ""
             self._capturing = False

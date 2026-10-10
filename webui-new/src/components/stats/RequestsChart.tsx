@@ -8,8 +8,8 @@ interface Props {
 export function RequestsChart({ points }: Props) {
   const data = points.map((p) => ({
     t: new Date(p.t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    成功: p.success,
-    失败: p.failed,
+    Success: p.success,
+    Failed: p.failed,
   }))
   return (
     <div className="h-64">
@@ -36,8 +36,8 @@ export function RequestsChart({ points }: Props) {
               fontSize: 12,
             }}
           />
-          <Area type="monotone" dataKey="成功" stroke="hsl(160 84% 39%)" fill="url(#gradSuccess)" strokeWidth={2} />
-          <Area type="monotone" dataKey="失败" stroke="hsl(0 84% 60%)" fill="url(#gradFailed)" strokeWidth={2} />
+          <Area type="monotone" dataKey="Success" stroke="hsl(160 84% 39%)" fill="url(#gradSuccess)" strokeWidth={2} />
+          <Area type="monotone" dataKey="Failed" stroke="hsl(0 84% 60%)" fill="url(#gradFailed)" strokeWidth={2} />
         </AreaChart>
       </ResponsiveContainer>
     </div>

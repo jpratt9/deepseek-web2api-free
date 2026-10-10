@@ -44,7 +44,7 @@ export function ApiKeyManager() {
         if (cancelled) return
         const message = String(e?.message ?? e)
         setError(message)
-        toast({ title: '加载 API Key 失败', description: message, variant: 'destructive' })
+        toast({ title: 'Failed to load API keys', description: message, variant: 'destructive' })
       })
       .finally(() => !cancelled && setLoading(false))
     return () => {
@@ -55,7 +55,7 @@ export function ApiKeyManager() {
   async function createKey() {
     const trimmedName = name.trim()
     if (!trimmedName) {
-      toast({ title: '请填写 Key 名称', variant: 'destructive' })
+      toast({ title: 'Please enter a key name', variant: 'destructive' })
       return
     }
 
@@ -67,11 +67,11 @@ export function ApiKeyManager() {
       setNewKey(result.key)
       setName('')
       setConfirmingId(null)
-      toast({ title: 'API Key 已生成', description: '请立即复制并保存完整 Key。' })
+      toast({ title: 'API key generated', description: 'Copy and save the full key now.' })
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e)
       setError(message)
-      toast({ title: '生成 API Key 失败', description: message, variant: 'destructive' })
+      toast({ title: 'Failed to generate API key', description: message, variant: 'destructive' })
     } finally {
       setCreating(false)
     }
@@ -84,11 +84,11 @@ export function ApiKeyManager() {
       await del(`/admin/api/api-keys/${encodeURIComponent(key.id)}`)
       setKeys((current) => current.filter((item) => item.id !== key.id))
       setConfirmingId(null)
-      toast({ title: 'API Key 已撤销', description: `${key.name} 已无法继续调用 API。` })
+      toast({ title: 'API key revoked', description: `${key.name} can no longer call the API.` })
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e)
       setError(message)
-      toast({ title: '撤销 API Key 失败', description: message, variant: 'destructive' })
+      toast({ title: 'Failed to revoke API key', description: message, variant: 'destructive' })
     } finally {
       setRevokingId(null)
     }
@@ -98,11 +98,11 @@ export function ApiKeyManager() {
     if (!newKey) return
     try {
       await navigator.clipboard.writeText(newKey)
-      toast({ title: '已复制 API Key' })
+      toast({ title: 'API key copied' })
     } catch {
       toast({
-        title: '无法自动复制',
-        description: '请选中上方 Key 文本并手动复制。',
+        title: 'Could not copy automatically',
+        description: 'Select the key text above and copy it manually.',
         variant: 'destructive',
       })
     }
@@ -115,13 +115,13 @@ export function ApiKeyManager() {
           <div className="space-y-1.5">
             <CardTitle className="flex items-center gap-2 text-base">
               <KeyRound className="h-4 w-4" />
-              客户端 API Key
+              Client API Keys
             </CardTitle>
             <CardDescription>
-              为不同客户端创建独立 Key；完整值只在生成后显示一次，服务端仅保存哈希。
+              Create a separate key for each client; the full value is shown only once at creation, and the server stores only its hash.
             </CardDescription>
           </div>
-          <Badge variant="secondary">{keys.length} 个</Badge>
+          <Badge variant="secondary">{keys.length}</Badge>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -130,26 +130,26 @@ export function ApiKeyManager() {
             value={name}
             onChange={(event) => setName(event.target.value)}
             onKeyDown={(event) => event.key === 'Enter' && void createKey()}
-            placeholder="Key 名称，例如：Claude Code"
+            placeholder="Key name, e.g. Claude Code"
             maxLength={64}
-            aria-label="API Key 名称"
+            aria-label="API key name"
             disabled={creating}
           />
           <Button onClick={() => void createKey()} disabled={creating || !name.trim()}>
             <Plus className="h-4 w-4" />
-            {creating ? '生成中…' : '生成 Key'}
+            {creating ? 'Generating…' : 'Generate key'}
           </Button>
         </div>
 
         {newKey && (
           <div className="space-y-2 rounded-md border border-primary/30 bg-primary/5 p-3">
-            <div className="text-sm font-medium">新 Key 只显示这一次，请现在复制保存。</div>
+            <div className="text-sm font-medium">This key is shown only once — copy and save it now.</div>
             <div className="flex flex-col gap-2 sm:flex-row">
-              <Input value={newKey} readOnly className="font-mono text-xs select-all" aria-label="新生成的 API Key" />
+              <Input value={newKey} readOnly className="font-mono text-xs select-all" aria-label="Newly generated API key" />
               <Button variant="outline" onClick={() => void copyKey()}>
-                <Copy className="h-4 w-4" />复制
+                <Copy className="h-4 w-4" />Copy
               </Button>
-              <Button variant="ghost" onClick={() => setNewKey(null)}>完成</Button>
+              <Button variant="ghost" onClick={() => setNewKey(null)}>Done</Button>
             </div>
           </div>
         )}
@@ -157,10 +157,10 @@ export function ApiKeyManager() {
         {error && <p className="text-sm text-destructive">{error}</p>}
 
         {loading ? (
-          <p className="text-sm text-muted-foreground">正在加载 Key…</p>
+          <p className="text-sm text-muted-foreground">Loading keys…</p>
         ) : keys.length === 0 ? (
           <p className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">
-            还没有客户端 API Key。生成一个后即可用于 OpenAI 兼容接口。
+            No client API keys yet. Generate one to use with the OpenAI-compatible API.
           </p>
         ) : (
           <div className="divide-y rounded-md border">
@@ -170,22 +170,22 @@ export function ApiKeyManager() {
                   <div className="truncate text-sm font-medium">{key.name}</div>
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                     <code className="font-mono">{key.prefix}…</code>
-                    <span>创建于 {new Date(key.created_at * 1000).toLocaleString()}</span>
+                    <span>Created {new Date(key.created_at * 1000).toLocaleString()}</span>
                   </div>
                 </div>
                 {confirmingId === key.id ? (
                   <div className="flex shrink-0 items-center gap-2">
-                    <span className="text-xs text-destructive">确认撤销？</span>
+                    <span className="text-xs text-destructive">Confirm revoke?</span>
                     <Button
                       size="sm"
                       variant="destructive"
                       onClick={() => void revokeKey(key)}
                       disabled={revokingId === key.id}
                     >
-                      {revokingId === key.id ? '撤销中…' : '确认'}
+                      {revokingId === key.id ? 'Revoking…' : 'Confirm'}
                     </Button>
                     <Button size="sm" variant="ghost" onClick={() => setConfirmingId(null)} disabled={revokingId === key.id}>
-                      取消
+                      Cancel
                     </Button>
                   </div>
                 ) : (
@@ -194,9 +194,9 @@ export function ApiKeyManager() {
                     variant="ghost"
                     className="shrink-0 text-muted-foreground hover:text-destructive"
                     onClick={() => setConfirmingId(key.id)}
-                    aria-label={`撤销 ${key.name}`}
+                    aria-label={`Revoke ${key.name}`}
                   >
-                    <Trash2 className="h-4 w-4" />撤销
+                    <Trash2 className="h-4 w-4" />Revoke
                   </Button>
                 )}
               </div>

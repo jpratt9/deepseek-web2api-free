@@ -17,7 +17,6 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { useToast } from '@/hooks/use-toast'
-import { useAuthStore } from '@/stores/auth'
 import { ApiCallError } from '@/lib/api'
 import { ModelSelector } from '@/components/playground/ModelSelector'
 import { MessageList, type ChatMessage, type StreamingState } from '@/components/playground/MessageList'
@@ -30,12 +29,11 @@ interface ApiMessage {
 
 /** Display labels for the model dropdown — mark the quick/expert modes. */
 const MODEL_LABELS: Record<string, string> = {
-  'deepseek-chat': 'deepseek-chat（快速 / 默认）',
-  'deepseek-reasoner': 'deepseek-reasoner（专家）',
+  'deepseek-chat': 'deepseek-chat (quick / default)',
+  'deepseek-reasoner': 'deepseek-reasoner (expert)',
 }
 
 export default function PlaygroundPage() {
-  const token = useAuthStore((s) => s.token)
   const { toast } = useToast()
 
   // Request parameters — these map to the fields the backend actually
@@ -87,7 +85,6 @@ export default function PlaygroundPage() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
           model,
@@ -175,7 +172,7 @@ export default function PlaygroundPage() {
         }
       } else {
         const msg = e instanceof ApiCallError ? e.message : String(e)
-        toast({ title: '请求失败', description: msg, variant: 'destructive' })
+        toast({ title: 'Request failed', description: msg, variant: 'destructive' })
       }
       setStreaming(null)
     } finally {
@@ -198,7 +195,7 @@ export default function PlaygroundPage() {
     <div className="space-y-4 animate-fade-in h-full flex flex-col">
       <PageHeader
         title="Playground"
-        description="在线测试 /v1/chat/completions"
+        description="Test /v1/chat/completions live"
         actions={
           <Button
             variant="outline"
@@ -206,7 +203,7 @@ export default function PlaygroundPage() {
             disabled={history.length === 0 || busy}
           >
             <Trash2 className="h-4 w-4" />
-            清空
+            Clear
           </Button>
         }
       />
@@ -217,26 +214,27 @@ export default function PlaygroundPage() {
           <CardHeader className="pb-2">
             <CardTitle className="text-base flex items-center gap-2">
               <FlaskConical className="h-4 w-4" />
-              参数
+              Parameters
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-1.5">
-              <Label>模型</Label>
+              <Label>Model</Label>
               <ModelSelector value={model} onChange={setModel} labels={MODEL_LABELS} />
               <p className="text-[11px] text-muted-foreground">
-                经 <code className="font-mono">MODEL_ROUTES</code> 映射 DeepSeek
-                <code className="font-mono"> model_type</code>（default / expert）
+                Mapped to DeepSeek
+                <code className="font-mono"> model_type</code> (default / expert) via
+                <code className="font-mono"> MODEL_ROUTES</code>
               </p>
             </div>
 
             <div className="space-y-1.5">
-              <Label htmlFor="system">System 提示</Label>
+              <Label htmlFor="system">System prompt</Label>
               <textarea
                 id="system"
                 value={systemPrompt}
                 onChange={(e) => setSystemPrompt(e.target.value)}
-                placeholder="可选，例如 'You are a helpful assistant.'"
+                placeholder="Optional, e.g. 'You are a helpful assistant.'"
                 className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 rows={3}
               />
@@ -244,9 +242,9 @@ export default function PlaygroundPage() {
 
             <div className="flex items-center justify-between">
               <div>
-                <Label htmlFor="thinking">思考模式</Label>
+                <Label htmlFor="thinking">Thinking mode</Label>
                 <p className="text-[11px] text-muted-foreground">
-                  对应 DeepSeek <code className="font-mono">thinking_enabled</code>
+                  Maps to DeepSeek <code className="font-mono">thinking_enabled</code>
                 </p>
               </div>
               <Switch id="thinking" checked={thinking} onCheckedChange={setThinking} />
@@ -254,9 +252,9 @@ export default function PlaygroundPage() {
 
             <div className="flex items-center justify-between">
               <div>
-                <Label htmlFor="search">联网搜索</Label>
+                <Label htmlFor="search">Web search</Label>
                 <p className="text-[11px] text-muted-foreground">
-                  对应 DeepSeek <code className="font-mono">search_enabled</code>
+                  Maps to DeepSeek <code className="font-mono">search_enabled</code>
                 </p>
               </div>
               <Switch id="search" checked={search} onCheckedChange={setSearch} />
@@ -265,12 +263,12 @@ export default function PlaygroundPage() {
             <div className="rounded-md border border-dashed p-3 text-[11px] leading-relaxed text-muted-foreground space-y-1">
               <p className="flex items-center gap-1 font-medium text-foreground/80">
                 <Info className="h-3.5 w-3.5" />
-                参数生效规则
+                How parameters apply
               </p>
-              <p>· 服务端 .env 的 MODE / THINKING / SEARCH 优先级高于此处设置</p>
-              <p>· MODE=expert 时始终走专家模式（model_type=expert）</p>
-              <p>· THINKING/SEARCH 为 enabled/disabled 时强制开关</p>
-              <p>· temperature / top_p / max_tokens 后端暂不生效，未提供</p>
+              <p>· The server's .env MODE / THINKING / SEARCH take priority over these settings</p>
+              <p>· MODE=expert always uses expert mode (model_type=expert)</p>
+              <p>· THINKING/SEARCH set to enabled/disabled force the toggle</p>
+              <p>· temperature / top_p / max_tokens have no effect on the backend yet, so they are not offered</p>
             </div>
           </CardContent>
         </Card>
@@ -290,23 +288,23 @@ export default function PlaygroundPage() {
                   handleSend()
                 }
               }}
-              placeholder="输入消息，回车发送，Shift+回车换行…"
+              placeholder="Type a message — Enter to send, Shift+Enter for a new line…"
               disabled={busy || !model}
               className="flex-1"
             />
             {busy ? (
-              <Button variant="destructive" onClick={handleStop} aria-label="停止">
+              <Button variant="destructive" onClick={handleStop} aria-label="Stop">
                 <Square className="h-4 w-4" />
               </Button>
             ) : (
               <Button onClick={handleSend} disabled={!input.trim() || !model}>
                 <Send className="h-4 w-4" />
-                发送
+                Send
               </Button>
             )}
           </div>
           <div className="border-t px-3 py-1.5 text-[11px] text-muted-foreground">
-            Enter 发送 · Shift+Enter 换行 · 模型与参数见左侧
+            Enter to send · Shift+Enter for a new line · model and parameters on the left
           </div>
         </Card>
       </div>
@@ -315,13 +313,13 @@ export default function PlaygroundPage() {
       <AlertDialog open={clearOpen} onOpenChange={setClearOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>清空所有对话？</AlertDialogTitle>
-            <AlertDialogDescription>此操作将删除当前会话中的所有消息，不可恢复。</AlertDialogDescription>
+            <AlertDialogTitle>Clear all messages?</AlertDialogTitle>
+            <AlertDialogDescription>This deletes every message in the current session and cannot be undone.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleClear} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
-              确认清空
+              Clear
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

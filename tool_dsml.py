@@ -1,7 +1,7 @@
 """
-DSML — DeepSeek Markup Language 工具调用格式解析器
+DSML — DeepSeek Markup Language tool-call format parser
 
-格式：
+Format:
   <|DSML|tool_calls>
     <|DSML|invoke name="TOOL_NAME">
       <|DSML|parameter name="ARG_NAME"><![CDATA[VALUE]]></|DSML|parameter>
@@ -18,7 +18,7 @@ _CDATA_CLOSE = "]]>"
 
 
 def strip_dsml_markup(text: str) -> str:
-    """去除 DSML 前缀，保留原始 XML 结构。"""
+    """Strip the DSML prefix, keeping the original XML structure."""
     if not text:
         return text
     parts = []
@@ -81,21 +81,21 @@ def extract_cdata(text: str) -> str:
 
 
 def parse_dsml_tool_calls(text: str, tool_names: list[str] | None = None) -> tuple[list[dict], str]:
-    """从文本中解析 DSML 工具调用，返回 (tool_calls, cleaned_text)"""
+    """Parse DSML tool calls from text, returning (tool_calls, cleaned_text)."""
     if not text:
         return [], text
 
     normalized = strip_dsml_markup(text)
     tool_calls = []
 
-    # <tool_calls>...</tool_calls> 或 <tool_call>...</tool_call>
+    # <tool_calls>...</tool_calls> or <tool_call>...</tool_call>
     for pattern in (r"<tool_calls>(.*?)</tool_calls>", r"<tool_call>(.*?)</tool_call>"):
         blocks = re.findall(pattern, normalized, re.DOTALL | re.IGNORECASE)
         if blocks:
             break
 
     if not blocks:
-        # 裸 <invoke> 无外层 wrapper
+        # Bare <invoke> with no outer wrapper
         invoke_bare = re.findall(
             r"<invoke\s+name=[\"']([^\"']+)[\"']>(.*?)</invoke>",
             normalized, re.DOTALL | re.IGNORECASE
@@ -167,7 +167,7 @@ def _clean_dsml_text(text: str) -> str:
 
 
 def format_tool_calls_for_prompt(tool_calls_raw: Any) -> str:
-    """将 OpenAI tool_calls 格式化为 DSML 提示词格式。"""
+    """Format OpenAI tool_calls into DSML prompt format."""
     if isinstance(tool_calls_raw, str):
         try:
             tool_calls_raw = json.loads(tool_calls_raw)
@@ -240,7 +240,7 @@ def _escape_xml_attr(text: str) -> str:
 
 
 def build_dsml_tool_prompt(tools: list[dict], tool_choice: str | dict | None = None) -> str:
-    """构建工具调用提示词，附加到 system message。"""
+    """Build the tool-call prompt appended to the system message."""
     if not tools:
         return ""
 

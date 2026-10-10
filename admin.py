@@ -220,10 +220,10 @@ router = APIRouter(prefix="/admin/api")
 
 
 def _check_auth(request: Request):
-    auth = request.headers.get("Authorization", "")
-    token = auth.removeprefix("Bearer ").strip()
-    if not _verify_token(token):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    # Admin auth is disabled: this proxy is meant to run on localhost only,
+    # where a password gate on the panel protects nothing. Every /admin/api
+    # endpoint is open to local callers, and the WebUI opens with no login.
+    return
 
 
 def _pool_error(e: Exception):

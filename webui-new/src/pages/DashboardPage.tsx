@@ -30,47 +30,47 @@ export default function DashboardPage() {
   return (
     <div className="space-y-6 animate-fade-in">
       <PageHeader
-        title="概览"
-        description="实时统计 · 趋势图 · 账号池状态"
+        title="Overview"
+        description="Live stats · trends · account pool status"
       />
 
       {/* 6 stat cards */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <StatCard
-          label="总请求"
+          label="Total requests"
           value={formatNumber(stats.data?.total_requests)}
           icon={Activity}
           loading={stats.loading && !stats.data}
         />
         <StatCard
-          label="成功"
+          label="Succeeded"
           value={formatNumber(stats.data?.success_requests)}
           tone="success"
           icon={CheckCircle2}
           loading={stats.loading && !stats.data}
         />
         <StatCard
-          label="失败"
+          label="Failed"
           value={formatNumber(stats.data?.failed_requests)}
           tone="destructive"
           icon={XCircle}
           loading={stats.loading && !stats.data}
         />
         <StatCard
-          label="成功率"
+          label="Success rate"
           value={formatPercent(stats.data?.success_rate)}
           tone="primary"
           icon={Percent}
           loading={stats.loading && !stats.data}
         />
         <StatCard
-          label="平均延迟"
+          label="Avg latency"
           value={formatLatency(stats.data?.avg_latency_ms)}
           icon={Clock}
           loading={stats.loading && !stats.data}
         />
         <StatCard
-          label="运行时长"
+          label="Uptime"
           value={formatUptime(stats.data?.uptime_secs)}
           icon={Hourglass}
           loading={stats.loading && !stats.data}
@@ -81,7 +81,7 @@ export default function DashboardPage() {
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-base">请求量趋势（过去 30 分钟）</CardTitle>
+            <CardTitle className="text-base">Request volume (last 30 min)</CardTitle>
           </CardHeader>
           <CardContent>
             {history.loading && !history.data ? (
@@ -98,7 +98,7 @@ export default function DashboardPage() {
 
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-base">平均延迟（过去 30 分钟）</CardTitle>
+            <CardTitle className="text-base">Avg latency (last 30 min)</CardTitle>
           </CardHeader>
           <CardContent>
             {history.loading && !history.data ? (
@@ -128,7 +128,7 @@ export default function DashboardPage() {
           <CardHeader className="pb-2">
             <CardTitle className="text-base flex items-center gap-2">
               <Clock className="h-4 w-4" />
-              延迟分位
+              Latency percentiles
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
@@ -136,7 +136,7 @@ export default function DashboardPage() {
             <PercentileRow label="p95" value={stats.data?.p95_latency_ms} tone="warning" />
             <PercentileRow label="p99" value={stats.data?.p99_latency_ms} tone="destructive" />
             <div className="pt-1 text-[11px] text-muted-foreground">
-              基于最近 {stats.data?.latency_window_size ?? 0} 次请求
+              Based on the last {stats.data?.latency_window_size ?? 0} requests
             </div>
           </CardContent>
         </Card>
@@ -145,13 +145,13 @@ export default function DashboardPage() {
           <CardHeader className="pb-2">
             <CardTitle className="text-base flex items-center gap-2">
               <Coins className="h-4 w-4" />
-              Token 累计
+              Token totals
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
             <TokenRow icon={KeyRound} label="Prompt" value={stats.data?.total_prompt_tokens} />
             <TokenRow icon={Coins} label="Completion" value={stats.data?.total_completion_tokens} />
-            <div className="pt-1 text-[11px] text-muted-foreground">本地 tiktoken 估算</div>
+            <div className="pt-1 text-[11px] text-muted-foreground">Local tiktoken estimate</div>
           </CardContent>
         </Card>
       </div>
@@ -162,7 +162,7 @@ export default function DashboardPage() {
           <CardHeader className="pb-2">
             <CardTitle className="text-base flex items-center gap-2">
               <Users className="h-4 w-4" />
-              按模型
+              By model
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -171,9 +171,9 @@ export default function DashboardPage() {
                 <div key={model} className="rounded-md border bg-card p-3 text-sm">
                   <div className="font-medium">{model}</div>
                   <div className="mt-1 flex justify-between text-xs text-muted-foreground">
-                    <span>{formatNumber(m.requests)} 请求</span>
+                    <span>{formatNumber(m.requests)} requests</span>
                     <span>
-                      成功 {m.requests - m.errors} · 失败 {m.errors}
+                      succeeded {m.requests - m.errors} · failed {m.errors}
                     </span>
                   </div>
                 </div>
@@ -233,7 +233,7 @@ function ChartError({ err }: { err: ApiCallError }) {
   return (
     <div className="flex h-64 flex-col items-center justify-center text-sm text-muted-foreground">
       <XCircle className="mb-2 h-6 w-6 text-destructive" />
-      <div>无法加载历史数据</div>
+      <div>Failed to load history data</div>
       <div className="mt-1 text-xs">{err.message}</div>
     </div>
   )
@@ -243,7 +243,7 @@ function EmptyChart() {
   return (
     <div className="flex h-64 flex-col items-center justify-center text-sm text-muted-foreground">
       <BarChart3 className="mb-2 h-6 w-6 opacity-50" />
-      暂无数据
+      No data yet
     </div>
   )
 }

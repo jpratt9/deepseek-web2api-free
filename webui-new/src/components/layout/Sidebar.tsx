@@ -12,10 +12,10 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { to: '/', label: '概览', icon: Activity, end: true },
-  { to: '/accounts', label: '账号池', icon: Users },
+  { to: '/', label: 'Overview', icon: Activity, end: true },
+  { to: '/accounts', label: 'Account Pool', icon: Users },
   { to: '/playground', label: 'Playground', icon: FlaskConical },
-  { to: '/settings', label: '设置', icon: Settings },
+  { to: '/settings', label: 'Settings', icon: Settings },
 ]
 
 export function Sidebar() {
@@ -38,7 +38,7 @@ export function Sidebar() {
           <div className="ml-2.5 flex-1 overflow-hidden">
             <div className="truncate text-sm font-semibold">DS2API</div>
             <div className="truncate text-[10px] text-muted-foreground tracking-wider">
-              管理面板
+              Admin Panel
             </div>
           </div>
         )}
@@ -78,14 +78,14 @@ export function Sidebar() {
           size="sm"
           className="w-full justify-center"
           onClick={() => setCollapsed(!collapsed)}
-          aria-label={collapsed ? '展开侧边栏' : '折叠侧边栏'}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >
           {collapsed ? (
             <ChevronsRight className="h-4 w-4" />
           ) : (
             <>
               <ChevronsLeft className="h-4 w-4" />
-              <span>折叠</span>
+              <span>Collapse</span>
             </>
           )}
         </Button>

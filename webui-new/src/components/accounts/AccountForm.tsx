@@ -30,13 +30,13 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
         if (token) body.token = token
         if (cookies) body.cookies = cookies
         await put(`/admin/api/accounts/${encodeURIComponent(account.id)}`, body)
-        toast({ title: '账号已保存', variant: 'success' })
+        toast({ title: 'Account saved', variant: 'success' })
         // Refetch the account to get the fresh data.
         const saved: Account = { ...account, email: email || account.email }
         onSaved(saved)
       } else {
         if (!token || !cookies) {
-          toast({ title: 'Token 和 Cookies 不能为空', variant: 'destructive' })
+          toast({ title: 'Token and Cookies cannot be empty', variant: 'destructive' })
           setBusy(false)
           return
         }
@@ -45,7 +45,7 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
           cookies,
           email: email || '',
         })
-        toast({ title: '账号添加成功', variant: 'success' })
+        toast({ title: 'Account added', variant: 'success' })
         onSaved(res.account)
         setEmail('')
         setToken('')
@@ -53,7 +53,7 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
       }
     } catch (e) {
       const msg = e instanceof ApiCallError ? e.message : String(e)
-      toast({ title: '保存失败', description: msg, variant: 'destructive' })
+      toast({ title: 'Save failed', description: msg, variant: 'destructive' })
     } finally {
       setBusy(false)
     }
@@ -62,12 +62,12 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
   return (
     <div className="space-y-3">
       <div className="space-y-1.5">
-        <Label htmlFor="acct-email">标识（邮箱 / 备注）</Label>
+        <Label htmlFor="acct-email">Label (email / note)</Label>
         <Input
           id="acct-email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          placeholder="例如 user@example.com"
+          placeholder="e.g. user@example.com"
           autoComplete="off"
         />
       </div>
@@ -77,7 +77,7 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
           id="acct-token"
           value={token}
           onChange={(e) => setToken(e.target.value)}
-          placeholder={isEdit ? '留空则不修改 Token' : 'Authorization Bearer token（不要带 Bearer）'}
+          placeholder={isEdit ? 'Leave blank to keep the current Token' : 'Authorization Bearer token (without the "Bearer" prefix)'}
           autoComplete="off"
           className="font-mono text-xs"
         />
@@ -88,7 +88,7 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
           id="acct-cookies"
           value={cookies}
           onChange={(e) => setCookies(e.target.value)}
-          placeholder={isEdit ? '留空则不修改 Cookies' : 'cf_clearance=...; session=...'}
+          placeholder={isEdit ? 'Leave blank to keep the current Cookies' : 'cf_clearance=...; session=...'}
           autoComplete="off"
           className="font-mono text-xs"
         />
@@ -96,17 +96,17 @@ export function AccountForm({ account, onSaved, onCancel }: Props) {
       <div className="flex items-center gap-2 pt-2">
         <Button onClick={handleSave} disabled={busy}>
           {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : isEdit ? <Save className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
-          {isEdit ? '保存' : '添加'}
+          {isEdit ? 'Save' : 'Add'}
         </Button>
         {isEdit && onCancel && (
           <Button variant="outline" onClick={onCancel} disabled={busy}>
-            取消
+            Cancel
           </Button>
         )}
       </div>
       {!isEdit && (
         <p className="text-xs text-muted-foreground">
-          新增账号会持久化到 data/accounts.json。
+          New accounts are persisted to data/accounts.json.
         </p>
       )}
     </div>
