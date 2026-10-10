@@ -6,7 +6,7 @@ tokens. No official API key needed — it solves the site's PoW challenge itself
 
 > This is a stripped-down English fork of the
 > [original project](https://github.com/snake-aabb-wtf/deepseek-web2api-free),
-> pared back to four things: the **account pool**, a **Playground**, **DeepSeek
+> pared back to the essentials: the **account pool**, a **Playground**, **DeepSeek
 > session-token import**, an **Overview** panel, and an **env-vars** view on the
 > Settings screen. The admin login is removed (it runs on localhost).
 
