@@ -45,6 +45,23 @@ async function getConfig() {
   };
 }
 
+async function nextLabel(base, prefix) {
+  // The next unused label: prefix, then prefix2, prefix3, … (matches the
+  // existing pool so a push never clobbers an account already there).
+  const taken = new Set();
+  try {
+    const r = await fetch(`${base}/admin/api/accounts`);
+    if (r.ok) {
+      const d = await r.json();
+      for (const a of d.accounts || []) taken.add(a.email || "");
+    }
+  } catch (e) { /* proxy down → fall back to the bare prefix */ }
+  if (!taken.has(prefix)) return prefix;
+  let n = 2;
+  while (taken.has(`${prefix}${n}`)) n++;
+  return `${prefix}${n}`;
+}
+
 async function getCookieHeader() {
   // Cookies applicable to chat.deepseek.com — mirrors the real Cookie header,
   // HttpOnly cookies included.
@@ -111,35 +128,19 @@ async function pushCreds() {
       return flash(false, "No cookies — make sure you're logged into chat.deepseek.com.");
     }
 
-    // Upsert by label so repeated presses refresh the same account instead of
-    // piling up duplicates.
-    let id = null;
-    try {
-      const listRes = await fetch(`${base}/admin/api/accounts`);
-      if (listRes.ok) {
-        const data = await listRes.json();
-        const existing = (data.accounts || []).find((a) => (a.email || "") === cfg.label);
-        if (existing) id = existing.id;
-      }
-    } catch (e) { /* proxy might be down; the POST below will surface it */ }
-
-    const res = id
-      ? await fetch(`${base}/admin/api/accounts/${encodeURIComponent(id)}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token, cookies }),
-        })
-      : await fetch(`${base}/admin/api/accounts`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token, cookies, email: cfg.label }),
-        });
-
+    // Pick the next free label (prefix, prefix2, prefix3, …) so each push ADDS
+    // a new account instead of overwriting one you already pushed.
+    const label = await nextLabel(base, cfg.label);
+    const res = await fetch(`${base}/admin/api/accounts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, cookies, email: label }),
+    });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       throw new Error(`HTTP ${res.status} ${body.slice(0, 140)}`);
     }
-    return flash(true, `${id ? "Updated" : "Added"} "${cfg.label}" on ${base} @ ${new Date().toLocaleTimeString()}`);
+    return flash(true, `Added "${label}" on ${base} @ ${new Date().toLocaleTimeString()}`);
   } catch (e) {
     const msg = String((e && e.message) || e);
     return flash(false, `Failed: ${msg}  (is DS2API running at ${base}?)`);

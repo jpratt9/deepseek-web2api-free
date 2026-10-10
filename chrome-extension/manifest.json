@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "DeepSeek → DS2API",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Press a hotkey while logged into chat.deepseek.com to push your token + cookies to your local DS2API proxy.",
   "permissions": ["cookies", "scripting", "storage", "webRequest"],
   "host_permissions": [

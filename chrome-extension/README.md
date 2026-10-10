@@ -10,8 +10,10 @@ It reads:
   like `cf_clearance` that page scripts can't see (via the `chrome.cookies` API),
 
 then POSTs them to `POST /admin/api/accounts` on your proxy (no auth needed —
-the admin login was removed for local use). Repeated pushes upsert the same
-account (matched by **label**) instead of creating duplicates.
+the admin login was removed for local use). Each push **adds a new account**
+with an auto-numbered label (`deepseek`, `deepseek2`, `deepseek3`, …) so it
+never overwrites a login you already pushed — handy for stacking multiple
+DeepSeek accounts in the pool.
 
 ## Install
 
@@ -33,8 +35,8 @@ account (matched by **label**) instead of creating duplicates.
 
 - **Proxy URL** — default `http://127.0.0.1:8080`. Change it if you run the
   proxy on another host/port.
-- **Account label** — the account's name in the pool (default `deepseek`).
-  Pushes with the same label update that one account.
+- **Account label** — the base name in the pool (default `deepseek`). Each push
+  adds `deepseek`, then `deepseek2`, `deepseek3`, … so nothing gets overwritten.
 
 ## Notes
 
