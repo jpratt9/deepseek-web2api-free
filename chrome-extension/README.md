@@ -15,6 +15,12 @@ with an auto-numbered label (`deepseek`, `deepseek2`, `deepseek3`, …) so it
 never overwrites a login you already pushed — handy for stacking multiple
 DeepSeek accounts in the pool.
 
+<p align="center">
+  <img src="screenshots/popup.png" width="300" alt="Extension popup" />
+  &nbsp;
+  <img src="screenshots/popup-success.png" width="300" alt="Extension popup after a successful push" />
+</p>
+
 ## Install
 
 1. Open `chrome://extensions`, turn on **Developer mode** (top right).

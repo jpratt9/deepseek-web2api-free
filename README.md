@@ -26,6 +26,20 @@
 - **Usage statistics** — tiktoken-based estimation of prompt / completion / total tokens.
 - **Admin panel** — built-in web management UI supporting request statistics and account pool management (multi-account round-robin / persistent CRUD / re-login).
 
+> This is an English translation of the [original (Chinese) project](https://github.com/snake-aabb-wtf/deepseek-web2api-free). The admin password on the web portal has been removed (it runs on localhost), image/vision input was added, and a Chrome extension (below) was added for grabbing your DeepSeek credentials.
+
+---
+
+## Chrome extension — grab your DeepSeek token + cookies
+
+Logging into DeepSeek and digging the token + cookies out of DevTools is the tedious part, so [`chrome-extension/`](chrome-extension/) automates it: press a hotkey while logged into chat.deepseek.com and it pushes your token + the full cookie set (including HttpOnly cookies like `cf_clearance` that page scripts can't read) straight into the proxy's account pool. Each push **adds a new auto-numbered account** (`deepseek`, `deepseek2`, …) so nothing gets overwritten. See [chrome-extension/README.md](chrome-extension/README.md) to install.
+
+<p align="center">
+  <img src="chrome-extension/screenshots/popup.png" width="300" alt="Extension popup" />
+  &nbsp;
+  <img src="chrome-extension/screenshots/popup-success.png" width="300" alt="Extension popup after a successful push" />
+</p>
+
 ---
 
 ## Quick Start
