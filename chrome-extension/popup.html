@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DeepSeek → DS2API</title>
+    <style>
+      :root {
+        --bg: #141416;
+        --card: #1e1e22;
+        --border: rgba(255, 255, 255, 0.1);
+        --text: #ffffff;
+        --muted: #a1a1aa;
+        --accent: #9cbbd4;
+        --ok: #58c08a;
+        --err: #e08585;
+      }
+      * { box-sizing: border-box; }
+      body {
+        width: 320px;
+        margin: 0;
+        padding: 16px;
+        background: var(--bg);
+        color: var(--text);
+        font-family: Inter, "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+        line-height: 1.5;
+      }
+      h1 {
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        margin: 0 0 2px;
+      }
+      .sub { color: var(--muted); font-size: 11px; margin: 0 0 14px; }
+      label { display: block; font-size: 11px; color: var(--muted); margin: 10px 0 4px; }
+      input {
+        width: 100%;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        color: var(--text);
+        padding: 8px 10px;
+        font-size: 12px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        transition: border-color 0.3s;
+      }
+      input:focus { outline: none; border-color: var(--accent); }
+      button {
+        width: 100%;
+        margin-top: 14px;
+        background: var(--accent);
+        color: #10212b;
+        border: none;
+        border-radius: 999px;
+        padding: 10px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.3s;
+      }
+      button:hover { transform: translateY(-1px); filter: brightness(1.05); }
+      button:active { transform: translateY(0); }
+      .status {
+        margin-top: 12px;
+        padding: 9px 11px;
+        border-radius: 10px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        font-size: 11px;
+        color: var(--muted);
+        min-height: 16px;
+        word-break: break-word;
+      }
+      .status.ok { color: var(--ok); border-color: rgba(88, 192, 138, 0.3); }
+      .status.err { color: var(--err); border-color: rgba(224, 133, 133, 0.3); }
+      .hint { margin-top: 12px; font-size: 10.5px; color: var(--muted); }
+      .hint a { color: var(--accent); text-decoration: none; }
+      .hint a:hover { text-decoration: underline; }
+      kbd {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        padding: 1px 5px;
+        font-family: ui-monospace, monospace;
+        font-size: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>DeepSeek → DS2API</h1>
+    <p class="sub">Push your DeepSeek token + cookies into the local proxy.</p>
+
+    <label for="proxy">Proxy URL</label>
+    <input id="proxy" type="text" spellcheck="false" placeholder="http://127.0.0.1:8080" />
+
+    <label for="label">Account label</label>
+    <input id="label" type="text" spellcheck="false" placeholder="deepseek" />
+
+    <button id="push">Push now</button>
+
+    <div id="status" class="status">Ready.</div>
+
+    <p class="hint">
+      Hotkey: <kbd id="hk">Ctrl/⌘ + Shift + Y</kbd> — change at
+      <a id="shortcuts" href="#">chrome://extensions/shortcuts</a>
+    </p>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "DeepSeek → DS2API",
+  "version": "1.0.0",
+  "description": "Press a hotkey while logged into chat.deepseek.com to push your token + cookies to your local DS2API proxy.",
+  "permissions": ["cookies", "scripting", "storage", "webRequest"],
+  "host_permissions": [
+    "https://chat.deepseek.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "action": {
+    "default_title": "DeepSeek → DS2API",
+    "default_popup": "popup.html"
+  },
+  "commands": {
+    "push-creds": {
+      "suggested_key": { "default": "Ctrl+Shift+Y", "mac": "Command+Shift+Y" },
+      "description": "Push DeepSeek token + cookies to DS2API"
+    }
+  }
+}
