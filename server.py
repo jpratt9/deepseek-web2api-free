@@ -2,6 +2,7 @@
 OpenAI-compatible API proxy for DeepSeek Chat
 Supports streaming, tool calling (via DSML prompt injection), content parts, expert mode.
 """
+import base64
 import json
 import os
 import sys
@@ -10,6 +11,8 @@ import time
 import uuid
 import hashlib
 from typing import Optional, Union, Any
+
+import httpx
 
 import uvicorn
 from dotenv import load_dotenv
@@ -254,6 +257,8 @@ def _validate_startup() -> None:
 class ContentPart(BaseModel):
     type: str
     text: Optional[str] = None
+    # OpenAI vision: {"type":"image_url","image_url":{"url":"data:...|https://..."}}
+    image_url: Optional[Any] = None
 
 
 class FunctionCall(BaseModel):
@@ -508,6 +513,92 @@ def _extract_text(content: Union[str, list[ContentPart], None]) -> str:
     )
 
 
+# ── Image attachments (vision) ────────────────────────────────────────
+# OpenAI `image_url` parts and Anthropic `image` blocks are resolved to raw
+# bytes here, then uploaded to DeepSeek by the acquired account's adapter
+# (see adapter.upload_images) and referenced via ref_file_ids with
+# model_type="vision".
+_IMG_EXT = {
+    "image/png": "png", "image/jpeg": "jpg", "image/jpg": "jpg",
+    "image/webp": "webp", "image/gif": "gif", "image/heic": "heic",
+}
+_MAX_IMAGE_BYTES = 20 * 1024 * 1024
+
+
+def _image_urls_openai(messages: list[ChatMessage]) -> list[str]:
+    """Collect image URLs / data URIs from OpenAI content parts."""
+    urls: list[str] = []
+    for m in messages:
+        if not isinstance(m.content, list):
+            continue
+        for p in m.content:
+            if getattr(p, "type", None) != "image_url" or p.image_url is None:
+                continue
+            iu = p.image_url
+            url = iu.get("url") if isinstance(iu, dict) else (
+                iu if isinstance(iu, str) else getattr(iu, "url", None))
+            if url:
+                urls.append(url)
+    return urls
+
+
+def _image_urls_anthropic(system, messages) -> list[str]:
+    """Collect image URLs / data URIs from Anthropic `image` blocks."""
+    urls: list[str] = []
+    blocks = []
+    if isinstance(system, list):
+        blocks.extend(system)
+    for m in messages:
+        if isinstance(m.content, list):
+            blocks.extend(m.content)
+    for b in blocks:
+        if getattr(b, "type", None) != "image":
+            continue
+        src = getattr(b, "source", None)
+        if not isinstance(src, dict):
+            continue
+        if src.get("type") == "base64" and src.get("data"):
+            media = src.get("media_type", "image/png")
+            urls.append(f"data:{media};base64,{src['data']}")
+        elif src.get("type") == "url" and src.get("url"):
+            urls.append(src["url"])
+    return urls
+
+
+def _resolve_image(url: str, index: int) -> tuple[bytes, str, str]:
+    """Resolve a data URI or http(s) URL to ``(bytes, filename, mime)``."""
+    if url.startswith("data:"):
+        try:
+            header, payload = url.split(",", 1)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="malformed image data URI")
+        mime = (header[len("data:"):].split(";")[0] or "image/png").lower()
+        try:
+            data = base64.b64decode(payload, validate=True)
+        except Exception:
+            raise HTTPException(status_code=400, detail="invalid base64 image data")
+    elif url.startswith(("http://", "https://")):
+        try:
+            resp = httpx.get(url, timeout=30, follow_redirects=True)
+            resp.raise_for_status()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"could not download image: {e}")
+        data = resp.content
+        mime = (resp.headers.get("content-type", "") or "").split(";")[0].strip().lower() or "image/png"
+    else:
+        raise HTTPException(status_code=400, detail=f"unsupported image url: {url[:60]!r}")
+    if not data:
+        raise HTTPException(status_code=400, detail="image is empty")
+    if len(data) > _MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="image exceeds the 20MB limit")
+    ext = _IMG_EXT.get(mime, "png")
+    return data, f"image-{index + 1}.{ext}", mime
+
+
+def _resolve_images(urls: list[str]) -> list[tuple[bytes, str, str]]:
+    return [_resolve_image(u, i) for i, u in enumerate(urls)]
+
+
 def _build_prompt(messages: list[ChatMessage], tools: list[ToolDef] | None = None,
                   tool_choice: str | dict | None = None) -> str:
     """Build a prompt string from messages, injecting tool definitions if present."""
@@ -690,12 +781,13 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
     # streamed call from a non-streaming call (or vice versa) makes the
     # upstream return an empty response. Same-mode multi-turn still works.
     openai_user = _extract_openai_user(req, request)
+    images = _resolve_images(_image_urls_openai(req.messages))
     if req.stream:
         return await _handle_stream(proxy_id, prompt, req.tools, model_type=model_type, thinking_mode=thinking, search_enabled=search, rate_headers=rate_headers,
-                                    cache_key=_cache_key(request, "stream", openai_user))
+                                    cache_key=_cache_key(request, "stream", openai_user), images=images)
 
     return _handle_nonstream(proxy_id, prompt, req.tools, model_type=model_type, thinking_mode=thinking, search_enabled=search,
-                             cache_key=_cache_key(request, "nonstream", openai_user))
+                             cache_key=_cache_key(request, "nonstream", openai_user), images=images)
 
 
 # ---- Anthropic /v1/messages endpoint ----
@@ -758,33 +850,39 @@ async def messages(req: AnthropicRequest, request: Request):
                 tool_names.append(t.name)
 
     anth_user = _extract_anthropic_user(req, request)
+    images = _resolve_images(_image_urls_anthropic(req.system, req.messages))
     if req.stream:
         return await _anthropic_stream(proxy_id, prompt, tool_names,
                                        model_type=model_type, thinking_mode=thinking,
                                        search_enabled=search,
                                        rate_headers=rate_headers,
-                                       cache_key=_cache_key(request, "stream", anth_user))
+                                       cache_key=_cache_key(request, "stream", anth_user), images=images)
 
     return _anthropic_nonstream(proxy_id, prompt, tool_names,
                                 model_type=model_type, thinking_mode=thinking,
                                 search_enabled=search,
-                                cache_key=_cache_key(request, "nonstream", anth_user))
+                                cache_key=_cache_key(request, "nonstream", anth_user), images=images)
 
 
 def _anthropic_nonstream(msg_id: str, prompt: str, tool_names: list[str],
                          model_type: str | None = None,
                          thinking_mode: bool = False, search_enabled: bool = False,
-                         cache_key: str | None = None):
+                         cache_key: str | None = None,
+                         images: list[tuple[bytes, str, str]] | None = None):
     acq = _acquire(cache_key=cache_key)
     try:
         eff = acq.prepare_prompt(prompt)
         ds_id = acq.create_session()
+        ref_file_ids = acq.adapter.upload_images(images) if images else None
+        if ref_file_ids:
+            model_type = "vision"
         t0 = time.time()
         ready_out: dict = {}
         content, thinking = acq.adapter.chat(ds_id, eff, model_type=model_type,
                                               thinking_enabled=thinking_mode, search_enabled=search_enabled,
                                               parent_message_id=acq.parent_message_id,
-                                              ready_out=ready_out)
+                                              ready_out=ready_out,
+                                              ref_file_ids=ref_file_ids)
         if ready_out.get("response_message_id") is not None:
             acq.record_message_id(ready_out["response_message_id"],
                                   ready_out.get("session_id"),
@@ -832,11 +930,15 @@ async def _anthropic_stream(msg_id: str, prompt: str, tool_names: list[str],
                             model_type: str | None = None,
                             thinking_mode: bool = False, search_enabled: bool = False,
                             rate_headers: dict | None = None,
-                            cache_key: str | None = None):
+                            cache_key: str | None = None,
+                            images: list[tuple[bytes, str, str]] | None = None):
     acq = _acquire(cache_key=cache_key)
     try:
         eff = acq.prepare_prompt(prompt)
         ds_id = acq.create_session()
+        ref_file_ids = acq.adapter.upload_images(images) if images else None
+        if ref_file_ids:
+            model_type = "vision"
     except Exception as e:
         get_stats().record(MODEL_NAME, 0, success=False)
         pool.mark_error(acq.acct, str(e))
@@ -855,7 +957,8 @@ async def _anthropic_stream(msg_id: str, prompt: str, tool_names: list[str],
                                        thinking_enabled=thinking_mode,
                                        search_enabled=search_enabled,
                                        parent_message_id=acq.parent_message_id,
-                                       ready_out=ready_out),
+                                       ready_out=ready_out,
+                                       ref_file_ids=ref_file_ids),
                 tool_names,
                 thinking_mode=thinking_mode,
             ):
@@ -893,19 +996,24 @@ async def _anthropic_stream(msg_id: str, prompt: str, tool_names: list[str],
 def _handle_nonstream(proxy_id: str, prompt: str, tools: list[ToolDef] | None = None,
                       model_type: str | None = None,
                       thinking_mode: bool = False, search_enabled: bool = False,
-                      cache_key: str | None = None):
+                      cache_key: str | None = None,
+                      images: list[tuple[bytes, str, str]] | None = None):
     """Non-streaming completion with tool call detection."""
     prompt_tokens = count_text(prompt)
     acq = _acquire(cache_key=cache_key)
     try:
         eff = acq.prepare_prompt(prompt)
         ds_id = acq.create_session()
+        ref_file_ids = acq.adapter.upload_images(images) if images else None
+        if ref_file_ids:
+            model_type = "vision"
         t0 = time.time()
         ready_out: dict = {}
         content, thinking = acq.adapter.chat(ds_id, eff, model_type=model_type,
                                               thinking_enabled=thinking_mode, search_enabled=search_enabled,
                                               parent_message_id=acq.parent_message_id,
-                                              ready_out=ready_out)
+                                              ready_out=ready_out,
+                                              ref_file_ids=ref_file_ids)
         if ready_out.get("response_message_id") is not None:
             acq.record_message_id(ready_out["response_message_id"],
                                   ready_out.get("session_id"),
@@ -991,13 +1099,17 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
                          model_type: str | None = None,
                          thinking_mode: bool = False, search_enabled: bool = False,
                          rate_headers: dict | None = None,
-                         cache_key: str | None = None):
+                         cache_key: str | None = None,
+                         images: list[tuple[bytes, str, str]] | None = None):
     """Streaming completion with StreamSieve tool call detection and expert mode support."""
     prompt_tokens = count_text(prompt)
     acq = _acquire(cache_key=cache_key)
     try:
         eff = acq.prepare_prompt(prompt)
         ds_id = acq.create_session()
+        ref_file_ids = acq.adapter.upload_images(images) if images else None
+        if ref_file_ids:
+            model_type = "vision"
     except Exception as e:
         get_stats().record(MODEL_NAME, 0, success=False, prompt_tokens=prompt_tokens)
         pool.mark_error(acq.acct, str(e))
@@ -1037,7 +1149,8 @@ async def _handle_stream(proxy_id: str, prompt: str, tools: list[ToolDef] | None
                                                   thinking_enabled=thinking_mode,
                                                   search_enabled=search_enabled,
                                                   parent_message_id=acq.parent_message_id,
-                                                  ready_out=ready_out):
+                                                  ready_out=ready_out,
+                                                  ref_file_ids=ref_file_ids):
                 if isinstance(token, dict):
                     tt = token.get("__type")
                     if tt == "status":

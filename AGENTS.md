@@ -1729,7 +1729,7 @@ def _extract_text(content) -> str:
     return " ".join(p.text for p in content if p.type == "text" and p.text)
 ```
 
-Currently only `type: "text"` ContentParts are supported. Images, files, and other multimodal content are not supported (the DeepSeek Chat web app itself does not support them).
+`type: "text"` ContentParts become the prompt. `type: "image_url"` parts (data URIs or http(s) URLs) ARE supported: the server resolves the bytes, the acquired account's adapter uploads them to DeepSeek (`upload_file` → poll `fetch_files` → `ref_file_ids`), and the completion runs as `model_type="vision"` (see §7.12). The Anthropic endpoint handles `image` content blocks the same way. Non-image file types (PDFs, etc.) are not wired.
 
 ### 12.2 Pydantic model
 
@@ -2304,7 +2304,7 @@ Older versions lacked this frame, making the client treat the `finish_reason: nu
 | `tool_choice` unreliable | prompt-injection approach limitation | the model may choose not to call a tool |
 | `max_tokens` ineffective | DeepSeek API does not support it | long replies must be truncated yourself |
 | `temperature`/`top_p` ineffective | DeepSeek API does not support them | cannot control randomness |
-| No multimodal | the web API does not support images | text interaction only |
+| Images only (no PDFs/docs) | only image upload is wired | images work via the vision upload flow; other file types would need the same `upload_file` path |
 | OpenAI non-streaming endpoint does not output reasoning_content | the OpenAI non-streaming response model does not include this field | use streaming for the reasoning process (Anthropic non-streaming already supports thinking blocks) |
 
 ### 18.3 CORS cross-origin support

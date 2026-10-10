@@ -449,6 +449,83 @@ class DeepSeekAdapter:
             return biz["id"]
         return biz["chat_session"]["id"]
 
+    # ── File / image upload (vision) ──────────────────────────────────
+    # DeepSeek's web backend takes images via a file upload: POST the bytes to
+    # /api/v0/file/upload_file (PoW-signed like a completion), poll
+    # /api/v0/file/fetch_files until the file is parsed (SUCCESS), then pass the
+    # returned id in ref_file_ids with model_type="vision" on the completion.
+    def upload_file(self, data: bytes, filename: str,
+                    content_type: str = "image/png") -> str:
+        """Upload one file to DeepSeek; return its id once it has parsed."""
+        if not data:
+            raise ValueError("cannot upload an empty file")
+        try:
+            from curl_cffi import CurlMime
+        except ImportError:  # older curl_cffi exposes it under .curl
+            from curl_cffi.curl import CurlMime
+        headers = self._pow_headers("/api/v0/file/upload_file")
+        headers.pop("Content-Type", None)  # multipart sets its own boundary
+        mime = CurlMime.from_list([{
+            "name": "file",
+            "filename": filename,
+            "content_type": content_type,
+            "data": data,
+        }])
+        resp = self._client.post(
+            f"{BASE_URL}/api/v0/file/upload_file",
+            multipart=mime, headers=headers,
+        )
+        kind = self._detect_waf_challenge(resp.status_code, resp.headers)
+        if kind:
+            raise WAFChallengeError(kind, resp.status_code, resp.text)
+        resp.raise_for_status()
+        payload = resp.json()
+        try:
+            file_id = payload["data"]["biz_data"]["id"]
+        except (KeyError, TypeError) as e:
+            raise RuntimeError(f"unexpected upload response: {payload}") from e
+        self.wait_for_files([file_id])
+        return file_id
+
+    def fetch_files(self, file_ids: list[str]) -> list[dict]:
+        """Return DeepSeek's records (status, dimensions, …) for file ids."""
+        if not file_ids:
+            return []
+        resp = self._client.get(
+            f"{BASE_URL}/api/v0/file/fetch_files",
+            params={"file_ids": list(file_ids)},
+            headers=self._base_headers,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        try:
+            return payload["data"]["biz_data"]["files"]
+        except (KeyError, TypeError) as e:
+            raise RuntimeError(f"unexpected fetch_files response: {payload}") from e
+
+    def wait_for_files(self, file_ids: list[str], timeout: float = 60.0,
+                       interval: float = 1.0) -> None:
+        """Poll fetch_files until every id reports SUCCESS; raise otherwise."""
+        deadline = time.monotonic() + timeout
+        while True:
+            by_id = {f.get("id"): f for f in self.fetch_files(file_ids)
+                     if isinstance(f, dict)}
+            failed = [i for i in file_ids
+                      if by_id.get(i, {}).get("status") in ("FAILED", "ERROR")]
+            if failed:
+                raise RuntimeError(f"image processing failed upstream: {failed}")
+            if all(by_id.get(i, {}).get("status") == "SUCCESS" for i in file_ids):
+                return
+            if time.monotonic() >= deadline:
+                raise RuntimeError("timed out waiting for image(s) to process")
+            time.sleep(interval)
+
+    def upload_images(self, images: list[tuple[bytes, str, str]]) -> list[str]:
+        """Upload images (each a ``(bytes, filename, content_type)`` tuple)
+        and return their file ids, ready to pass as ``ref_file_ids``."""
+        return [self.upload_file(data, filename, content_type)
+                for (data, filename, content_type) in images]
+
     def _parse_sse(self, text: str):
         """Parse SSE text into a list of events"""
         events = []
@@ -519,7 +596,8 @@ class DeepSeekAdapter:
     def _send_completion(self, session_id: str, prompt: str, stream: bool = False,
                          model_type: str | None = None,
                          thinking_enabled: bool = False, search_enabled: bool = False,
-                         parent_message_id: int | None = None):
+                         parent_message_id: int | None = None,
+                         ref_file_ids: list[str] | None = None):
         """Send a completion request, returns raw response.
 
         ``parent_message_id`` is the message id from the previous turn in
@@ -537,7 +615,7 @@ class DeepSeekAdapter:
             "parent_message_id": parent_message_id,
             "model_type": model_type,
             "prompt": prompt,
-            "ref_file_ids": [],
+            "ref_file_ids": list(ref_file_ids or []),
             "stream": stream,
             "thinking_enabled": thinking_enabled,
             "search_enabled": search_enabled,
@@ -569,7 +647,8 @@ class DeepSeekAdapter:
     def chat(self, session_id: str, prompt: str, model_type: str | None = None,
              thinking_enabled: bool = False, search_enabled: bool = False,
              parent_message_id: int | None = None,
-             ready_out: dict | None = None) -> tuple[str, str]:
+             ready_out: dict | None = None,
+             ref_file_ids: list[str] | None = None) -> tuple[str, str]:
         """Send a non-streaming chat message.
 
         Returns ``(content, thinking)``:
@@ -596,7 +675,8 @@ class DeepSeekAdapter:
                                       thinking_enabled=thinking_enabled,
                                       search_enabled=search_enabled,
                                       parent_message_id=parent_message_id,
-                                      ready_out=ready_out)
+                                      ready_out=ready_out,
+                                      ref_file_ids=ref_file_ids)
                 if ready_out is not None:
                     ready_out["session_id"] = session_id
                 return ret
@@ -628,12 +708,14 @@ class DeepSeekAdapter:
     def _chat_once(self, session_id: str, prompt: str, model_type: str | None = None,
                    thinking_enabled: bool = False, search_enabled: bool = False,
                    parent_message_id: int | None = None,
-                   ready_out: dict | None = None) -> tuple[str, str]:
+                   ready_out: dict | None = None,
+                   ref_file_ids: list[str] | None = None) -> tuple[str, str]:
         resp = self._send_completion(session_id, prompt, stream=False,
                                      model_type=model_type,
                                      thinking_enabled=thinking_enabled,
                                      search_enabled=search_enabled,
-                                     parent_message_id=parent_message_id)
+                                     parent_message_id=parent_message_id,
+                                     ref_file_ids=ref_file_ids)
         if not resp.text or not resp.text.strip():
             raise UpstreamEmptyError("upstream returned empty response body")
 
@@ -763,7 +845,8 @@ class DeepSeekAdapter:
                     model_type: str | None = None,
                     thinking_enabled: bool = False, search_enabled: bool = False,
                     parent_message_id: int | None = None,
-                    ready_out: dict | None = None):
+                    ready_out: dict | None = None,
+                    ref_file_ids: list[str] | None = None):
         """Stream a chat message, yields content tokens.
 
         In expert mode (model_type='expert'), yields dicts with
@@ -790,7 +873,8 @@ class DeepSeekAdapter:
                         thinking_enabled=thinking_enabled,
                         search_enabled=search_enabled,
                         parent_message_id=parent_message_id,
-                        ready_out=ready_out):
+                        ready_out=ready_out,
+                        ref_file_ids=ref_file_ids):
                     yielded = True
                     yield token
             except UserMutedError:
@@ -825,7 +909,8 @@ class DeepSeekAdapter:
                           model_type: str | None = None,
                           thinking_enabled: bool = False, search_enabled: bool = False,
                           parent_message_id: int | None = None,
-                          ready_out: dict | None = None):
+                          ready_out: dict | None = None,
+                          ref_file_ids: list[str] | None = None):
         headers = self._pow_headers("/api/v0/chat/completion")
         if parent_message_id is None:
             mid = self._msg_counters.get(session_id, 0) + 1
@@ -836,7 +921,7 @@ class DeepSeekAdapter:
             "parent_message_id": parent_message_id,
             "model_type": model_type,
             "prompt": prompt,
-            "ref_file_ids": [],
+            "ref_file_ids": list(ref_file_ids or []),
             "stream": True,
             "thinking_enabled": thinking_enabled,
             "search_enabled": search_enabled,

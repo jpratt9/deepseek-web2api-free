@@ -39,6 +39,9 @@ class ContentBlock(BaseModel):
     content: Optional[Any] = None
     thinking: Optional[str] = None
     signature: Optional[str] = None
+    # Anthropic image block: {"type":"image","source":{"type":"base64",
+    # "media_type":"image/png","data":"..."}} or {"type":"url","url":"..."}
+    source: Optional[Any] = None
 
 
 class AnthropicMessage(BaseModel):
